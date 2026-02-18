@@ -103,7 +103,7 @@ func inboundTags(inbounds []*servicepb.Inbound) []string {
 	return out
 }
 
-func (s *Service) resolveInboundsStrict(tags []string) ([]models.Inbound, error) {
+func (s *Service) resolveInbounds(tags []string) []models.Inbound {
 	unique := make([]string, 0, len(tags))
 	seen := make(map[string]struct{}, len(tags))
 	for _, tag := range tags {
@@ -116,19 +116,7 @@ func (s *Service) resolveInboundsStrict(tags []string) ([]models.Inbound, error)
 		seen[tag] = struct{}{}
 		unique = append(unique, tag)
 	}
-	inbounds := s.store.ListInbounds(unique)
-	if len(inbounds) != len(unique) {
-		found := make(map[string]struct{}, len(inbounds))
-		for _, inb := range inbounds {
-			found[inb.Tag] = struct{}{}
-		}
-		for _, tag := range unique {
-			if _, ok := found[tag]; !ok {
-				return nil, fmt.Errorf("inbound %q not found", tag)
-			}
-		}
-	}
-	return inbounds, nil
+	return s.store.ListInbounds(unique)
 }
 
 func (s *Service) applyUserData(ctx context.Context, data *servicepb.UserData) error {
@@ -144,10 +132,7 @@ func (s *Service) applyUserData(ctx context.Context, data *servicepb.UserData) e
 
 	switch {
 	case !hasStored && len(reqTags) > 0:
-		additions, err := s.resolveInboundsStrict(reqTags)
-		if err != nil {
-			return err
-		}
+		additions := s.resolveInbounds(reqTags)
 		if err := s.addUser(ctx, user, additions); err != nil {
 			return err
 		}
@@ -185,18 +170,9 @@ func (s *Service) applyUserData(ctx context.Context, data *servicepb.UserData) e
 		}
 	}
 
-	newInbounds, err := s.resolveInboundsStrict(reqTags)
-	if err != nil {
-		return err
-	}
-	addedInbounds, err := s.resolveInboundsStrict(addedTags)
-	if err != nil {
-		return err
-	}
-	removedInbounds, err := s.resolveInboundsStrict(removedTags)
-	if err != nil {
-		return err
-	}
+	newInbounds := s.resolveInbounds(reqTags)
+	addedInbounds := s.resolveInbounds(addedTags)
+	removedInbounds := s.resolveInbounds(removedTags)
 
 	if err := s.removeUser(ctx, stored, removedInbounds); err != nil {
 		return err

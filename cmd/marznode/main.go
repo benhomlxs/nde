@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
+	expcredentials "google.golang.org/grpc/experimental/credentials"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
@@ -25,6 +25,8 @@ import (
 	"marznode/internal/storage"
 	"marznode/internal/tlsutil"
 )
+
+const grpcMaxMessageSize = 64 * 1024 * 1024
 
 func main() {
 	cfg := config.Load()
@@ -54,7 +56,10 @@ func main() {
 		backends["sing-box"] = b
 	}
 
-	var serverOpts []grpc.ServerOption
+	serverOpts := []grpc.ServerOption{
+		grpc.MaxRecvMsgSize(grpcMaxMessageSize),
+		grpc.MaxSendMsgSize(grpcMaxMessageSize),
+	}
 	if !cfg.Insecure {
 		if err := tlsutil.EnsureServerKeypair(cfg.SSLCertFile, cfg.SSLKeyFile); err != nil {
 			log.Fatalf("ensure keypair failed: %v", err)
@@ -63,7 +68,9 @@ func main() {
 		if err != nil {
 			log.Fatalf("build tls failed: %v", err)
 		}
-		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+		// Marzneshin's grpclib client can connect without ALPN configured on the client SSL context.
+		// grpc-go enforces ALPN by default; using compatibility credentials keeps interop with existing panels.
+		serverOpts = append(serverOpts, grpc.Creds(expcredentials.NewTLSWithALPNDisabled(tlsCfg)))
 	}
 
 	grpcServer := grpc.NewServer(serverOpts...)
