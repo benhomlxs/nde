@@ -2,7 +2,7 @@ FROM golang:1.24-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 
-ARG GOPROXY=direct
+ARG GOPROXY=https://goproxy.cn,https://goproxy.io,https://proxy.golang.org,direct
 ARG GOSUMDB=off
 ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=${GOSUMDB}
