@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	proxymancommand "github.com/xtls/xray-core/app/proxyman/command"
 	statscmd "github.com/xtls/xray-core/app/stats/command"
@@ -88,6 +89,9 @@ func (a *API) AddUser(ctx context.Context, tag string, uid uint32, username, key
 		Operation: serial.ToTypedMessage(&proxymancommand.AddUserOperation{User: user}),
 	})
 	if err != nil {
+		if isAlreadyExistsError(err) {
+			return nil
+		}
 		a.reset()
 		return err
 	}
@@ -108,6 +112,9 @@ func (a *API) RemoveUser(ctx context.Context, tag string, uid uint32, username s
 		),
 	})
 	if err != nil {
+		if isUserNotFoundError(err) {
+			return nil
+		}
 		a.reset()
 		return err
 	}
@@ -169,4 +176,20 @@ func buildAccount(protocolName, seed, flow string, algo config.AuthAlgorithm) (p
 	default:
 		return nil, fmt.Errorf("unsupported protocol: %s", protocolName)
 	}
+}
+
+func isAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(status.Convert(err).Message())
+	return strings.Contains(msg, "already exists")
+}
+
+func isUserNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(status.Convert(err).Message())
+	return strings.Contains(msg, "user") && strings.Contains(msg, "not found")
 }

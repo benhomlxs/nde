@@ -1,12 +1,11 @@
 package auth
 
 import (
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 
-	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
+	"github.com/zeebo/xxh3"
 
 	"marznode/internal/config"
 )
@@ -20,13 +19,9 @@ func GenerateUUID(seed string, algo config.AuthAlgorithm) (string, error) {
 		return id.String(), nil
 	}
 
-	sum1 := xxhash.Sum64String(seed)
-	sum2 := xxhash.Sum64String("marznode:" + seed)
-	var raw [16]byte
-	binary.BigEndian.PutUint64(raw[0:8], sum1)
-	binary.BigEndian.PutUint64(raw[8:16], sum2)
+	raw := xxh128Bytes(seed)
 
-	id, err := uuid.FromBytes(raw[:])
+	id, err := uuid.FromBytes(raw)
 	if err != nil {
 		return "", err
 	}
@@ -38,14 +33,32 @@ func GeneratePassword(seed string, algo config.AuthAlgorithm) string {
 		return seed
 	}
 
-	sum1 := xxhash.Sum64String(seed)
-	sum2 := xxhash.Sum64String("marznode:" + seed)
-	var raw [16]byte
-	binary.BigEndian.PutUint64(raw[0:8], sum1)
-	binary.BigEndian.PutUint64(raw[8:16], sum2)
-	return hex.EncodeToString(raw[:])
+	return hex.EncodeToString(xxh128Bytes(seed))
 }
 
 func UserIdentifier(uid uint32, username string) string {
 	return fmt.Sprintf("%d.%s", uid, username)
+}
+
+func xxh128Bytes(seed string) []byte {
+	// Match Python xxhash.xxh128 digest byte order exactly.
+	h := xxh3.Hash128([]byte(seed))
+	return []byte{
+		byte(h.Hi >> 56),
+		byte(h.Hi >> 48),
+		byte(h.Hi >> 40),
+		byte(h.Hi >> 32),
+		byte(h.Hi >> 24),
+		byte(h.Hi >> 16),
+		byte(h.Hi >> 8),
+		byte(h.Hi),
+		byte(h.Lo >> 56),
+		byte(h.Lo >> 48),
+		byte(h.Lo >> 40),
+		byte(h.Lo >> 32),
+		byte(h.Lo >> 24),
+		byte(h.Lo >> 16),
+		byte(h.Lo >> 8),
+		byte(h.Lo),
+	}
 }

@@ -30,6 +30,7 @@ const grpcMaxMessageSize = 64 * 1024 * 1024
 
 func main() {
 	cfg := config.Load()
+	log.Printf("marznode starting service_address=%s service_port=%d insecure=%t", cfg.ServiceAddress, cfg.ServicePort, cfg.Insecure)
 
 	store := storage.NewMemory()
 	backends := make(map[string]backend.Backend)
@@ -40,6 +41,7 @@ func main() {
 			log.Fatalf("start xray failed: %v", err)
 		}
 		backends["xray"] = b
+		log.Printf("backend started name=xray version=%s", b.Version())
 	}
 	if cfg.HysteriaEnabled {
 		b := hysteria2.NewBackend(cfg, store)
@@ -47,6 +49,7 @@ func main() {
 			log.Fatalf("start hysteria2 failed: %v", err)
 		}
 		backends["hysteria2"] = b
+		log.Printf("backend started name=hysteria2 version=%s", b.Version())
 	}
 	if cfg.SingBoxEnabled {
 		b := singbox.NewBackend(cfg, store)
@@ -54,11 +57,14 @@ func main() {
 			log.Fatalf("start sing-box failed: %v", err)
 		}
 		backends["sing-box"] = b
+		log.Printf("backend started name=sing-box version=%s", b.Version())
 	}
 
 	serverOpts := []grpc.ServerOption{
 		grpc.MaxRecvMsgSize(grpcMaxMessageSize),
 		grpc.MaxSendMsgSize(grpcMaxMessageSize),
+		grpc.ChainUnaryInterceptor(unaryLogInterceptor(cfg.Debug)),
+		grpc.ChainStreamInterceptor(streamLogInterceptor(cfg.Debug)),
 	}
 	if !cfg.Insecure {
 		if err := tlsutil.EnsureServerKeypair(cfg.SSLCertFile, cfg.SSLKeyFile); err != nil {
@@ -113,4 +119,30 @@ func main() {
 
 func intToString(v int) string {
 	return strconv.Itoa(v)
+}
+
+func unaryLogInterceptor(debug bool) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if debug {
+			log.Printf("grpc unary method=%s", info.FullMethod)
+		}
+		resp, err := handler(ctx, req)
+		if err != nil {
+			log.Printf("grpc unary error method=%s err=%v", info.FullMethod, err)
+		}
+		return resp, err
+	}
+}
+
+func streamLogInterceptor(debug bool) grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if debug {
+			log.Printf("grpc stream method=%s", info.FullMethod)
+		}
+		err := handler(srv, ss)
+		if err != nil {
+			log.Printf("grpc stream error method=%s err=%v", info.FullMethod, err)
+		}
+		return err
+	}
 }

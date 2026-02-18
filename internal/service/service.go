@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"sync"
 	"time"
 
@@ -198,7 +199,9 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 		err = s.applyUserData(uCtx, msg)
 		cancel()
 		if err != nil {
-			return status.Errorf(codes.Unavailable, "sync user failed: %v", err)
+			u := msg.GetUser()
+			log.Printf("sync user skipped uid=%d username=%q error=%v", u.GetId(), u.GetUsername(), err)
+			continue
 		}
 	}
 }
@@ -209,7 +212,9 @@ func (s *Service) RepopulateUsers(ctx context.Context, req *servicepb.UsersData)
 		err := s.applyUserData(uCtx, userData)
 		cancel()
 		if err != nil {
-			return nil, status.Errorf(codes.Unavailable, "repopulate failed: %v", err)
+			u := userData.GetUser()
+			log.Printf("repopulate user skipped uid=%d username=%q error=%v", u.GetId(), u.GetUsername(), err)
+			continue
 		}
 	}
 
@@ -223,7 +228,8 @@ func (s *Service) RepopulateUsers(ctx context.Context, req *servicepb.UsersData)
 			continue
 		}
 		if err := s.removeUser(ctx, user, user.Inbounds); err != nil {
-			return nil, status.Errorf(codes.Unavailable, "cleanup failed: %v", err)
+			log.Printf("repopulate cleanup skipped uid=%d username=%q error=%v", user.ID, user.Username, err)
+			continue
 		}
 		s.store.RemoveUser(user.ID)
 	}

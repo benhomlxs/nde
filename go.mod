@@ -3,11 +3,11 @@ module marznode
 go 1.24.4
 
 require (
-	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
 	github.com/xtls/xray-core v1.8.13
+	github.com/zeebo/xxh3 v1.0.2
 	google.golang.org/grpc v1.75.1
 	google.golang.org/protobuf v1.36.8
 	gopkg.in/yaml.v3 v3.0.1
@@ -18,6 +18,7 @@ require (
 	github.com/cloudflare/circl v1.3.8 // indirect
 	github.com/dgryski/go-metro v0.0.0-20211217172704-adc40b04c140 // indirect
 	github.com/klauspost/compress v1.17.7 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.7 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/pires/go-proxyproto v0.7.0 // indirect
 	github.com/quic-go/quic-go v0.44.0 // indirect
