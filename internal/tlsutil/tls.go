@@ -1,6 +1,7 @@
 package tlsutil
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -8,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"time"
@@ -73,12 +75,78 @@ func BuildServerTLSConfig(certPath, keyPath, clientCertPath string) (*tls.Config
 	if !pool.AppendCertsFromPEM(clientPEM) {
 		return nil, errors.New("invalid client certificate")
 	}
+	trusted := parsePEMCerts(clientPEM)
+	if len(trusted) == 0 {
+		return nil, errors.New("no cert found in client certificate bundle")
+	}
+
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{serverCert},
 		ClientCAs:    pool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
+		// Python version accepted client certs loaded from SSL_CLIENT_CERT_FILE directly.
+		// To keep compatibility with deployments where this file is a leaf cert (not a CA),
+		// we verify manually and allow direct leaf match as fallback.
+		ClientAuth: tls.RequireAnyClientCert,
+		NextProtos: []string{"h2"},
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return errors.New("no client certificate")
+			}
+
+			certs := make([]*x509.Certificate, 0, len(rawCerts))
+			for _, asn1Data := range rawCerts {
+				c, err := x509.ParseCertificate(asn1Data)
+				if err != nil {
+					return fmt.Errorf("parse client cert: %w", err)
+				}
+				certs = append(certs, c)
+			}
+
+			leaf := certs[0]
+			intermediates := x509.NewCertPool()
+			for _, ic := range certs[1:] {
+				intermediates.AddCert(ic)
+			}
+
+			if _, err := leaf.Verify(x509.VerifyOptions{
+				Roots:         pool,
+				Intermediates: intermediates,
+				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			}); err == nil {
+				return nil
+			}
+
+			// Fallback: exact cert pinning (compat with old setups passing leaf cert).
+			for _, tc := range trusted {
+				if bytes.Equal(tc.Raw, leaf.Raw) {
+					return nil
+				}
+			}
+			return errors.New("client certificate is not trusted")
+		},
 	}, nil
+}
+
+func parsePEMCerts(pemData []byte) []*x509.Certificate {
+	var certs []*x509.Certificate
+	rest := pemData
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		c, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		certs = append(certs, c)
+	}
+	return certs
 }
 
 func fileExists(path string) bool {

@@ -72,6 +72,7 @@ func main() {
 
 	healthSvc := health.NewServer()
 	healthSvc.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthSvc.SetServingStatus("marznode.MarzService", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(grpcServer, healthSvc)
 
 	addr := net.JoinHostPort(cfg.ServiceAddress, intToString(cfg.ServicePort))
