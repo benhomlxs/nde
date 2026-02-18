@@ -1,12 +1,14 @@
+PROTOC ?= protoc
+
 __default__:
-	@echo "Please specify a target to make"
+	@echo "Targets: proto-go build test"
 
-GEN=python3 -m grpc_tools.protoc -I. --python_out=. --grpclib_python_out=. --pyi_out=.
-GENERATED=*{_pb2.py,_grpc.py,.pyi}
+proto-go:
+	$(PROTOC) --proto_path=. --go_out=. --go_opt=module=marznode --go-grpc_out=. --go-grpc_opt=module=marznode marznode/service/service.proto
+	$(PROTOC) --proto_path=. --go_out=. --go_opt=module=marznode --go_opt=Mmarznode/backends/singbox/sb_stats.proto=marznode/internal/gen/sbstatspb --go-grpc_out=. --go-grpc_opt=module=marznode --go-grpc_opt=Mmarznode/backends/singbox/sb_stats.proto=marznode/internal/gen/sbstatspb marznode/backends/singbox/sb_stats.proto
 
-clean:
-	rm -rf marznode/service/$(GENERATED)
+build:
+	go build ./...
 
-proto: clean
-	$(GEN) marznode/service/service.proto
-
+test:
+	go test ./...

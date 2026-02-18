@@ -1,6 +1,7 @@
 syntax = "proto3";
 
 package marznode;
+option go_package = "marznode/internal/gen/servicepb;servicepb";
 
 message Empty {}
 

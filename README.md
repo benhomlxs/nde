@@ -1,36 +1,42 @@
-Marznode
----------
-Just a fork of Marzban-node.
+Marznode (Go)
+-------------
+Go refactor of `marznode` for connecting node servers to the central Marzneshin panel.
 
-- [X] xray-core
-- [X] hysteria
-- [X] sing-box
+Supported backends:
+- `xray-core`
+- `sing-box`
+- `hysteria2`
 
-## Setup Guide for Development
-Python versions older than 3.12 are not supported.
+## Build
 
-Setup python virtual environment
-```sh
-python -m venv .venv/
-source .venv/bin/activate
+```bash
+go build -o marznode ./cmd/marznode
 ```
 
-Install the requirements
+## Run
 
-```sh
-pip install -r requirements.txt
-```
-
-Configure the node. you should provide the correct path to your xray binary and your xray config file.
-
-```sh
+```bash
 cp .env.example .env
+./marznode
 ```
 
+## Environment
 
-Set your certificate for the node by saving the certificate in a file and providing address of the certificate
-file using `CLIENT_SSL_CERT`. And then execute and start the node:
+Main variables are in `.env.example`:
+- service bind: `SERVICE_ADDRESS`, `SERVICE_PORT`, `INSECURE`
+- backend paths: `XRAY_EXECUTABLE_PATH`, `SING_BOX_EXECUTABLE_PATH`, `HYSTERIA_EXECUTABLE_PATH`
+- backend config paths: `XRAY_CONFIG_PATH`, `SING_BOX_CONFIG_PATH`, `HYSTERIA_CONFIG_PATH`
+- TLS: `SSL_KEY_FILE`, `SSL_CERT_FILE`, `SSL_CLIENT_CERT_FILE`
 
-```sh
-python marznode.py
+## Proto Generation
+
+Install:
+- `protoc`
+- `protoc-gen-go`
+- `protoc-gen-go-grpc`
+
+Then:
+
+```bash
+make proto-go
 ```

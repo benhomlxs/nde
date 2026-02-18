@@ -1,15 +1,15 @@
-FROM python:3.12-alpine
+FROM golang:1.24-alpine AS builder
 
-ENV PYTHONUNBUFFERED=1
-
-WORKDIR /app
-
+WORKDIR /src
 COPY . .
 
-RUN mkdir /etc/init.d/
+RUN go build -o /out/marznode ./cmd/marznode
 
-RUN apk add --no-cache curl unzip
+FROM alpine:3.21
 
-RUN apk add --no-cache alpine-sdk libffi-dev && pip install --no-cache-dir -r /app/requirements.txt && apk del -r alpine-sdk libffi-dev curl unzip
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
 
-CMD ["python3", "marznode.py"]
+COPY --from=builder /out/marznode /app/marznode
+
+CMD ["/app/marznode"]
