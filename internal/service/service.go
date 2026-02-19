@@ -31,6 +31,9 @@ type Service struct {
 }
 
 const repopulateMarkerUsername = "__marznode_repopulate__"
+const repopulateBulkThreshold = 200
+const repopulateWorkers = 8
+const repopulateUserApplyTimeout = 45 * time.Second
 
 func New(store storage.Storage, backends map[string]backend.Backend) *Service {
 	return &Service{
@@ -66,7 +69,8 @@ func (s *Service) addUser(ctx context.Context, user models.User, inbounds []mode
 	for _, inb := range inbounds {
 		b, err := s.backendByTag(inb.Tag)
 		if err != nil {
-			return err
+			log.Printf("add user skip uid=%d username=%q tag=%q reason=%v", user.ID, user.Username, inb.Tag, err)
+			continue
 		}
 		if err := b.AddUser(ctx, user, inb); err != nil {
 			return err
@@ -79,7 +83,8 @@ func (s *Service) removeUser(ctx context.Context, user models.User, inbounds []m
 	for _, inb := range inbounds {
 		b, err := s.backendByTag(inb.Tag)
 		if err != nil {
-			return err
+			log.Printf("remove user skip uid=%d username=%q tag=%q reason=%v", user.ID, user.Username, inb.Tag, err)
+			continue
 		}
 		if err := b.RemoveUser(ctx, user, inb); err != nil {
 			return err
@@ -201,21 +206,12 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 	repopulateMode := false
 	first := true
 	keep := map[uint32]struct{}{}
+	repopulateData := make([]*servicepb.UserData, 0)
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
 			if repopulateMode {
-				existing := s.store.ListUsers()
-				for _, user := range existing {
-					if _, ok := keep[user.ID]; ok {
-						continue
-					}
-					if err := s.removeUser(ctx, user, user.Inbounds); err != nil {
-						log.Printf("repopulate stream cleanup skipped uid=%d username=%q error=%v", user.ID, user.Username, err)
-						continue
-					}
-					s.store.RemoveUser(user.ID)
-				}
+				s.applyRepopulateStream(repopulateData, keep)
 			}
 			return stream.SendAndClose(&servicepb.Empty{})
 		}
@@ -236,6 +232,8 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 			if u != nil && u.GetId() != 0 {
 				keep[u.GetId()] = struct{}{}
 			}
+			repopulateData = append(repopulateData, msg)
+			continue
 		}
 
 		uCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -247,6 +245,79 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 			continue
 		}
 	}
+}
+
+func (s *Service) applyRepopulateStream(repopulateData []*servicepb.UserData, keep map[uint32]struct{}) {
+	ctx := context.Background()
+	if len(repopulateData) >= repopulateBulkThreshold {
+		s.applyRepopulateBulk(ctx, repopulateData)
+	} else {
+		for _, msg := range repopulateData {
+			uCtx, cancel := context.WithTimeout(ctx, repopulateUserApplyTimeout)
+			err := s.applyUserData(uCtx, msg)
+			cancel()
+			if err != nil {
+				u := msg.GetUser()
+				log.Printf("repopulate user skipped uid=%d username=%q error=%v", u.GetId(), u.GetUsername(), err)
+			}
+		}
+	}
+
+	existing := s.store.ListUsers()
+	for _, user := range existing {
+		if _, ok := keep[user.ID]; ok {
+			continue
+		}
+		uCtx, cancel := context.WithTimeout(ctx, repopulateUserApplyTimeout)
+		err := s.removeUser(uCtx, user, user.Inbounds)
+		cancel()
+		if err != nil {
+			log.Printf("repopulate stream cleanup skipped uid=%d username=%q error=%v", user.ID, user.Username, err)
+			continue
+		}
+		s.store.RemoveUser(user.ID)
+	}
+}
+
+func (s *Service) applyRepopulateBulk(ctx context.Context, repopulateData []*servicepb.UserData) {
+	type job struct {
+		data *servicepb.UserData
+	}
+
+	workers := repopulateWorkers
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(repopulateData) {
+		workers = len(repopulateData)
+	}
+	if workers == 0 {
+		return
+	}
+
+	jobs := make(chan job, workers*2)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range jobs {
+				uCtx, cancel := context.WithTimeout(ctx, repopulateUserApplyTimeout)
+				err := s.applyUserData(uCtx, item.data)
+				cancel()
+				if err != nil {
+					u := item.data.GetUser()
+					log.Printf("repopulate bulk user skipped uid=%d username=%q error=%v", u.GetId(), u.GetUsername(), err)
+				}
+			}
+		}()
+	}
+
+	for _, msg := range repopulateData {
+		jobs <- job{data: msg}
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 func (s *Service) RepopulateUsers(ctx context.Context, req *servicepb.UsersData) (*servicepb.Empty, error) {
