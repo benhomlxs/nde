@@ -28,7 +28,7 @@ type Service struct {
 	backends map[string]backend.Backend
 
 	lockMu    sync.Mutex
-	userLocks map[uint32]*sync.Mutex
+	userLocks map[uint32]*userLockState
 
 	syncUserApplyTimeout       time.Duration
 	repopulateUserApplyTimeout time.Duration
@@ -36,6 +36,11 @@ type Service struct {
 	repopulateWorkers          int
 	userApplyRetries           int
 	userApplyRetryDelay        time.Duration
+}
+
+type userLockState struct {
+	mu   sync.Mutex
+	refs int
 }
 
 const repopulateMarkerUsername = "__marznode_repopulate__"
@@ -50,7 +55,7 @@ func New(store storage.Storage, backends map[string]backend.Backend) *Service {
 	s := &Service{
 		store:                      store,
 		backends:                   backends,
-		userLocks:                  make(map[uint32]*sync.Mutex),
+		userLocks:                  make(map[uint32]*userLockState),
 		syncUserApplyTimeout:       defaultSyncUserApplyTimeout,
 		repopulateUserApplyTimeout: defaultRepopulateUserApplyTimeout,
 		repopulateBulkThreshold:    defaultRepopulateBulkThreshold,
@@ -81,13 +86,27 @@ func (s *Service) lockUser(uid uint32) func() {
 	s.lockMu.Lock()
 	lk, ok := s.userLocks[uid]
 	if !ok {
-		lk = &sync.Mutex{}
+		lk = &userLockState{}
 		s.userLocks[uid] = lk
 	}
+	lk.refs++
 	s.lockMu.Unlock()
 
-	lk.Lock()
-	return lk.Unlock
+	lk.mu.Lock()
+	return func() {
+		lk.mu.Unlock()
+
+		s.lockMu.Lock()
+		defer s.lockMu.Unlock()
+
+		lk.refs--
+		if lk.refs <= 0 {
+			// Remove only if map still points to the same lock instance.
+			if current, exists := s.userLocks[uid]; exists && current == lk {
+				delete(s.userLocks, uid)
+			}
+		}
+	}
 }
 
 func (s *Service) backendByTag(tag string) (backend.Backend, error) {
