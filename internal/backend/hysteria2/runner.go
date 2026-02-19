@@ -61,25 +61,36 @@ func (r *Runner) Start(ctx context.Context, renderedConfig string) error {
 
 	go r.capture(stderr)
 	go r.capture(stdout)
-	go r.wait()
+	go r.wait(cmd)
 	return nil
 }
 
-func (r *Runner) wait() {
+func (r *Runner) wait(cmd *exec.Cmd) {
+	var path string
 	r.mu.RLock()
-	cmd := r.cmd
-	path := r.tempConfig
+	if r.cmd == cmd {
+		path = r.tempConfig
+	}
 	r.mu.RUnlock()
+
 	if cmd != nil {
 		_ = cmd.Wait()
 	}
-	if path != "" {
+
+	removePath := ""
+	r.mu.Lock()
+	if r.cmd == cmd {
+		r.cmd = nil
+		removePath = r.tempConfig
+		r.tempConfig = ""
+	}
+	r.mu.Unlock()
+
+	if removePath != "" {
+		_ = os.Remove(removePath)
+	} else if path != "" {
 		_ = os.Remove(path)
 	}
-	r.mu.Lock()
-	r.cmd = nil
-	r.tempConfig = ""
-	r.mu.Unlock()
 }
 
 func (r *Runner) capture(reader io.Reader) {

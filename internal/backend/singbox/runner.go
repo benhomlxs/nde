@@ -64,7 +64,7 @@ func (r *Runner) Start(ctx context.Context, configPath string) error {
 	r.currentConfig = configPath
 	go r.capture(stderr)
 	go r.capture(stdout)
-	go r.wait()
+	go r.wait(cmd)
 	return nil
 }
 
@@ -76,20 +76,25 @@ func (r *Runner) capture(reader io.Reader) {
 	r.logBus.Publish("")
 }
 
-func (r *Runner) wait() {
-	r.mu.RLock()
-	cmd := r.cmd
-	r.mu.RUnlock()
+func (r *Runner) wait(cmd *exec.Cmd) {
 	if cmd == nil {
 		return
 	}
 	_ = cmd.Wait()
+
+	sendExit := false
 	r.mu.Lock()
-	r.cmd = nil
+	if r.cmd == cmd {
+		r.cmd = nil
+		sendExit = true
+	}
 	r.mu.Unlock()
-	select {
-	case r.exitCh <- struct{}{}:
-	default:
+
+	if sendExit {
+		select {
+		case r.exitCh <- struct{}{}:
+		default:
+		}
 	}
 }
 
