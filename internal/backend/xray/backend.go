@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -45,6 +45,7 @@ type Backend struct {
 }
 
 var _ backend.Backend = (*Backend)(nil)
+var logger = slog.With("component", "backend.xray")
 
 func NewBackend(cfg config.Config, store storage.Storage) *Backend {
 	b := &Backend{
@@ -341,18 +342,18 @@ func (b *Backend) monitorHealth(ctx context.Context) {
 			}
 
 			consecutiveFailures++
-			log.Printf("xray health check failed (%d/%d): %v", consecutiveFailures, maxFailures, err)
+			logger.Warn("health check failed", "failure_count", consecutiveFailures, "failure_threshold", maxFailures, "error", err)
 			if consecutiveFailures < maxFailures {
 				continue
 			}
 
 			consecutiveFailures = 0
-			log.Printf("xray unhealthy, attempting restart")
+			logger.Warn("backend unhealthy, attempting restart")
 			if err := b.Restart(context.Background(), raw); err != nil {
-				log.Printf("xray health restart failed: %v", err)
+				logger.Error("health restart failed", "error", err)
 				continue
 			}
-			log.Printf("xray health restart succeeded")
+			logger.Info("health restart succeeded")
 		}
 	}
 }

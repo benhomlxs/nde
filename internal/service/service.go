@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +34,8 @@ const repopulateMarkerUsername = "__marznode_repopulate__"
 const repopulateBulkThreshold = 200
 const repopulateWorkers = 8
 const repopulateUserApplyTimeout = 45 * time.Second
+
+var logger = slog.With("component", "service")
 
 func New(store storage.Storage, backends map[string]backend.Backend) *Service {
 	return &Service{
@@ -69,7 +71,7 @@ func (s *Service) addUser(ctx context.Context, user models.User, inbounds []mode
 	for _, inb := range inbounds {
 		b, err := s.backendByTag(inb.Tag)
 		if err != nil {
-			log.Printf("add user skip uid=%d username=%q tag=%q reason=%v", user.ID, user.Username, inb.Tag, err)
+			logger.Warn("add user skipped", "uid", user.ID, "username", user.Username, "tag", inb.Tag, "reason", err)
 			continue
 		}
 		if err := b.AddUser(ctx, user, inb); err != nil {
@@ -83,7 +85,7 @@ func (s *Service) removeUser(ctx context.Context, user models.User, inbounds []m
 	for _, inb := range inbounds {
 		b, err := s.backendByTag(inb.Tag)
 		if err != nil {
-			log.Printf("remove user skip uid=%d username=%q tag=%q reason=%v", user.ID, user.Username, inb.Tag, err)
+			logger.Warn("remove user skipped", "uid", user.ID, "username", user.Username, "tag", inb.Tag, "reason", err)
 			continue
 		}
 		if err := b.RemoveUser(ctx, user, inb); err != nil {
@@ -241,7 +243,7 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 		cancel()
 		if err != nil {
 			u := msg.GetUser()
-			log.Printf("sync user skipped uid=%d username=%q error=%v", u.GetId(), u.GetUsername(), err)
+			logger.Warn("sync user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
 			continue
 		}
 	}
@@ -258,7 +260,7 @@ func (s *Service) applyRepopulateStream(repopulateData []*servicepb.UserData, ke
 			cancel()
 			if err != nil {
 				u := msg.GetUser()
-				log.Printf("repopulate user skipped uid=%d username=%q error=%v", u.GetId(), u.GetUsername(), err)
+				logger.Warn("repopulate user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
 			}
 		}
 	}
@@ -272,7 +274,7 @@ func (s *Service) applyRepopulateStream(repopulateData []*servicepb.UserData, ke
 		err := s.removeUser(uCtx, user, user.Inbounds)
 		cancel()
 		if err != nil {
-			log.Printf("repopulate stream cleanup skipped uid=%d username=%q error=%v", user.ID, user.Username, err)
+			logger.Warn("repopulate stream cleanup skipped", "uid", user.ID, "username", user.Username, "error", err)
 			continue
 		}
 		s.store.RemoveUser(user.ID)
@@ -307,7 +309,7 @@ func (s *Service) applyRepopulateBulk(ctx context.Context, repopulateData []*ser
 				cancel()
 				if err != nil {
 					u := item.data.GetUser()
-					log.Printf("repopulate bulk user skipped uid=%d username=%q error=%v", u.GetId(), u.GetUsername(), err)
+					logger.Warn("repopulate bulk user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
 				}
 			}
 		}()
@@ -327,7 +329,7 @@ func (s *Service) RepopulateUsers(ctx context.Context, req *servicepb.UsersData)
 		cancel()
 		if err != nil {
 			u := userData.GetUser()
-			log.Printf("repopulate user skipped uid=%d username=%q error=%v", u.GetId(), u.GetUsername(), err)
+			logger.Warn("repopulate user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
 			continue
 		}
 	}
@@ -342,7 +344,7 @@ func (s *Service) RepopulateUsers(ctx context.Context, req *servicepb.UsersData)
 			continue
 		}
 		if err := s.removeUser(ctx, user, user.Inbounds); err != nil {
-			log.Printf("repopulate cleanup skipped uid=%d username=%q error=%v", user.ID, user.Username, err)
+			logger.Warn("repopulate cleanup skipped", "uid", user.ID, "username", user.Username, "error", err)
 			continue
 		}
 		s.store.RemoveUser(user.ID)

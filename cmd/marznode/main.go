@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -21,6 +21,7 @@ import (
 	"marznode/internal/backend/xray"
 	"marznode/internal/config"
 	"marznode/internal/gen/servicepb"
+	"marznode/internal/logutil"
 	"marznode/internal/service"
 	"marznode/internal/storage"
 	"marznode/internal/tlsutil"
@@ -30,7 +31,13 @@ const grpcMaxMessageSize = 64 * 1024 * 1024
 
 func main() {
 	cfg := config.Load()
-	log.Printf("marznode starting service_address=%s service_port=%d insecure=%t", cfg.ServiceAddress, cfg.ServicePort, cfg.Insecure)
+	logutil.Configure(cfg.Debug)
+	logger := slog.With("component", "main")
+	logger.Info("marznode starting",
+		"service_address", cfg.ServiceAddress,
+		"service_port", cfg.ServicePort,
+		"insecure", cfg.Insecure,
+	)
 
 	store := storage.NewMemory()
 	backends := make(map[string]backend.Backend)
@@ -38,26 +45,26 @@ func main() {
 	if cfg.XrayEnabled {
 		b := xray.NewBackend(cfg, store)
 		if err := b.Start(context.Background(), ""); err != nil {
-			log.Fatalf("start xray failed: %v", err)
+			fatal(logger, "start xray failed", "error", err)
 		}
 		backends["xray"] = b
-		log.Printf("backend started name=xray version=%s", b.Version())
+		logger.Info("backend started", "name", "xray", "version", b.Version())
 	}
 	if cfg.HysteriaEnabled {
 		b := hysteria2.NewBackend(cfg, store)
 		if err := b.Start(context.Background(), ""); err != nil {
-			log.Fatalf("start hysteria2 failed: %v", err)
+			fatal(logger, "start hysteria2 failed", "error", err)
 		}
 		backends["hysteria2"] = b
-		log.Printf("backend started name=hysteria2 version=%s", b.Version())
+		logger.Info("backend started", "name", "hysteria2", "version", b.Version())
 	}
 	if cfg.SingBoxEnabled {
 		b := singbox.NewBackend(cfg, store)
 		if err := b.Start(context.Background(), ""); err != nil {
-			log.Fatalf("start sing-box failed: %v", err)
+			fatal(logger, "start sing-box failed", "error", err)
 		}
 		backends["sing-box"] = b
-		log.Printf("backend started name=sing-box version=%s", b.Version())
+		logger.Info("backend started", "name", "sing-box", "version", b.Version())
 	}
 
 	serverOpts := []grpc.ServerOption{
@@ -68,11 +75,11 @@ func main() {
 	}
 	if !cfg.Insecure {
 		if err := tlsutil.EnsureServerKeypair(cfg.SSLCertFile, cfg.SSLKeyFile); err != nil {
-			log.Fatalf("ensure keypair failed: %v", err)
+			fatal(logger, "ensure keypair failed", "error", err)
 		}
 		tlsCfg, err := tlsutil.BuildServerTLSConfig(cfg.SSLCertFile, cfg.SSLKeyFile, cfg.SSLClientCertFile)
 		if err != nil {
-			log.Fatalf("build tls failed: %v", err)
+			fatal(logger, "build tls failed", "error", err)
 		}
 		// Marzneshin's grpclib client can connect without ALPN configured on the client SSL context.
 		// grpc-go enforces ALPN by default; using compatibility credentials keeps interop with existing panels.
@@ -91,13 +98,13 @@ func main() {
 	addr := net.JoinHostPort(cfg.ServiceAddress, intToString(cfg.ServicePort))
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("listen failed: %v", err)
+		fatal(logger, "listen failed", "address", addr, "error", err)
 	}
 
 	go func() {
-		log.Printf("marznode go service listening on %s", addr)
+		logger.Info("grpc server listening", "address", addr)
 		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("grpc server failed: %v", err)
+			fatal(logger, "grpc server failed", "error", err)
 		}
 	}()
 
@@ -105,14 +112,14 @@ func main() {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh
 
-	log.Println("shutting down marznode")
+	logger.Info("shutting down marznode")
 	grpcServer.GracefulStop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	for name, b := range backends {
 		if err := b.Stop(ctx); err != nil {
-			log.Printf("stop backend %s failed: %v", name, err)
+			logger.Error("stop backend failed", "name", name, "error", err)
 		}
 	}
 }
@@ -122,27 +129,34 @@ func intToString(v int) string {
 }
 
 func unaryLogInterceptor(debug bool) grpc.UnaryServerInterceptor {
+	logger := slog.With("component", "grpc.unary")
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if debug {
-			log.Printf("grpc unary method=%s", info.FullMethod)
+			logger.Debug("grpc unary call", "method", info.FullMethod)
 		}
 		resp, err := handler(ctx, req)
 		if err != nil {
-			log.Printf("grpc unary error method=%s err=%v", info.FullMethod, err)
+			logger.Error("grpc unary error", "method", info.FullMethod, "error", err)
 		}
 		return resp, err
 	}
 }
 
 func streamLogInterceptor(debug bool) grpc.StreamServerInterceptor {
+	logger := slog.With("component", "grpc.stream")
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		if debug {
-			log.Printf("grpc stream method=%s", info.FullMethod)
+			logger.Debug("grpc stream call", "method", info.FullMethod)
 		}
 		err := handler(srv, ss)
 		if err != nil {
-			log.Printf("grpc stream error method=%s err=%v", info.FullMethod, err)
+			logger.Error("grpc stream error", "method", info.FullMethod, "error", err)
 		}
 		return err
 	}
+}
+
+func fatal(logger *slog.Logger, msg string, args ...any) {
+	logger.Error(msg, args...)
+	os.Exit(1)
 }

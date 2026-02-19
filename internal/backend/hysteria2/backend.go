@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -53,22 +53,23 @@ type Backend struct {
 }
 
 var _ backend.Backend = (*Backend)(nil)
+var logger = slog.With("component", "backend.hysteria2")
 
 func NewBackend(cfg config.Config, store storage.Storage) *Backend {
 	b := &Backend{
-		name:           "hysteria2",
-		executablePath: cfg.HysteriaExecutablePath,
-		configPath:     cfg.HysteriaConfigPath,
-		authAlgo:       cfg.AuthGenerationAlgorithm,
+		name:             "hysteria2",
+		executablePath:   cfg.HysteriaExecutablePath,
+		configPath:       cfg.HysteriaConfigPath,
+		authAlgo:         cfg.AuthGenerationAlgorithm,
 		restartOnFailure: cfg.HysteriaRestartOnFailure,
 		restartInterval:  cfg.HysteriaRestartFailureInterval,
 		healthEnabled:    cfg.HysteriaHealthCheckEnabled,
 		healthInterval:   cfg.HysteriaHealthCheckInterval,
 		healthTimeout:    cfg.HysteriaHealthCheckTimeout,
 		healthFailures:   cfg.HysteriaHealthCheckFailures,
-		store:          store,
-		runner:         NewRunner(cfg.HysteriaExecutablePath),
-		usersByPass:    make(map[string]models.User),
+		store:            store,
+		runner:           NewRunner(cfg.HysteriaExecutablePath),
+		usersByPass:      make(map[string]models.User),
 	}
 	go b.monitorHealth(context.Background())
 	return b
@@ -383,7 +384,7 @@ func (b *Backend) monitorHealth(ctx context.Context) {
 				cancel()
 				if err != nil {
 					consecutiveFailures++
-					log.Printf("hysteria2 health check failed (%d/%d): %v", consecutiveFailures, maxFailures, err)
+					logger.Warn("health check failed", "failure_count", consecutiveFailures, "failure_threshold", maxFailures, "error", err)
 				} else {
 					consecutiveFailures = 0
 				}
@@ -395,19 +396,19 @@ func (b *Backend) monitorHealth(ctx context.Context) {
 			consecutiveFailures = 0
 
 			if !b.restartOnFailure {
-				log.Printf("hysteria2 unhealthy but restart-on-failure disabled")
+				logger.Warn("backend unhealthy but restart-on-failure disabled")
 				continue
 			}
 
 			if b.restartInterval > 0 {
 				time.Sleep(b.restartInterval)
 			}
-			log.Printf("hysteria2 unhealthy, attempting restart")
+			logger.Warn("backend unhealthy, attempting restart")
 			if err := b.Restart(context.Background(), raw); err != nil {
-				log.Printf("hysteria2 health restart failed: %v", err)
+				logger.Error("health restart failed", "error", err)
 				continue
 			}
-			log.Printf("hysteria2 health restart succeeded")
+			logger.Info("health restart succeeded")
 		}
 	}
 }
