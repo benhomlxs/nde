@@ -212,7 +212,17 @@ func (b *Backend) AddUser(ctx context.Context, user models.User, inbound models.
 	}
 
 	return util.Retry(ctx, 5, 200*time.Millisecond, func() error {
-		return api.AddUser(ctx, inbound.Tag, user.ID, user.Username, user.Key, inbound.Protocol, toString(inbound.Config["flow"]), b.authAlgo)
+		return api.AddUser(
+			ctx,
+			inbound.Tag,
+			user.ID,
+			user.Username,
+			user.Key,
+			inbound.Protocol,
+			toString(inbound.Config["flow"]),
+			toString(inbound.Config["method"]),
+			b.authAlgo,
+		)
 	})
 }
 

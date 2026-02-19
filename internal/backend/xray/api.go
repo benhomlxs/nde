@@ -2,6 +2,8 @@ package xray
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"sync"
@@ -66,14 +68,20 @@ func (a *API) reset() {
 	a.conn = nil
 }
 
-func (a *API) AddUser(ctx context.Context, tag string, uid uint32, username, key, protocolName, flow string, algo config.AuthAlgorithm) error {
+func (a *API) AddUser(
+	ctx context.Context,
+	tag string,
+	uid uint32,
+	username, key, protocolName, flow, method string,
+	algo config.AuthAlgorithm,
+) error {
 	conn, err := a.connect(ctx)
 	if err != nil {
 		return err
 	}
 
 	email := auth.UserIdentifier(uid, username)
-	accountMsg, err := buildAccount(protocolName, key, flow, algo)
+	accountMsg, err := buildAccount(protocolName, key, flow, method, algo)
 	if err != nil {
 		return err
 	}
@@ -170,7 +178,7 @@ func (a *API) SysStats(ctx context.Context) error {
 	return nil
 }
 
-func buildAccount(protocolName, seed, flow string, algo config.AuthAlgorithm) (proto.Message, error) {
+func buildAccount(protocolName, seed, flow, method string, algo config.AuthAlgorithm) (proto.Message, error) {
 	switch strings.ToLower(protocolName) {
 	case "vmess":
 		id, err := auth.GenerateUUID(seed, algo)
@@ -187,12 +195,56 @@ func buildAccount(protocolName, seed, flow string, algo config.AuthAlgorithm) (p
 	case "trojan":
 		return &trojan.Account{Password: auth.GeneratePassword(seed, algo)}, nil
 	case "shadowsocks":
-		return &shadowsocks.Account{Password: auth.GeneratePassword(seed, algo)}, nil
+		password := auth.GeneratePassword(seed, algo)
+		method = strings.ToLower(method)
+		if strings.HasPrefix(method, "2022-blake3") {
+			password = ensureBase64Password(password, method)
+			return &shadowsocks.Account{Password: password}, nil
+		}
+		return &shadowsocks.Account{
+			Password:   password,
+			CipherType: cipherTypeFromMethod(method),
+		}, nil
 	case "shadowsocks2022":
-		return &shadowsocks.Account{Password: auth.GeneratePassword(seed, algo)}, nil
+		password := ensureBase64Password(auth.GeneratePassword(seed, algo), method)
+		return &shadowsocks.Account{Password: password}, nil
 	default:
 		return nil, fmt.Errorf("unsupported protocol: %s", protocolName)
 	}
+}
+
+func cipherTypeFromMethod(method string) shadowsocks.CipherType {
+	switch strings.ToLower(method) {
+	case "aes-128-gcm", "aes_128_gcm":
+		return shadowsocks.CipherType_AES_128_GCM
+	case "aes-256-gcm", "aes_256_gcm":
+		return shadowsocks.CipherType_AES_256_GCM
+	case "chacha20-poly1305", "chacha20_poly1305":
+		return shadowsocks.CipherType_CHACHA20_POLY1305
+	case "xchacha20-poly1305", "xchacha20_poly1305":
+		return shadowsocks.CipherType_XCHACHA20_POLY1305
+	case "none":
+		return shadowsocks.CipherType_NONE
+	default:
+		return shadowsocks.CipherType_UNKNOWN
+	}
+}
+
+func ensureBase64Password(password, method string) string {
+	decoded, err := base64.StdEncoding.DecodeString(password)
+	if err == nil {
+		if (strings.Contains(method, "aes-128-gcm") && len(decoded) == 16) ||
+			((strings.Contains(method, "aes-256-gcm") || strings.Contains(method, "chacha20-poly1305")) && len(decoded) == 32) {
+			return password
+		}
+	}
+
+	sum := sha256.Sum256([]byte(password))
+	keyBytes := sum[:32]
+	if strings.Contains(method, "aes-128-gcm") {
+		keyBytes = sum[:16]
+	}
+	return base64.StdEncoding.EncodeToString(keyBytes)
 }
 
 func isAlreadyExistsError(err error) bool {

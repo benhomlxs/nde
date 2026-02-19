@@ -178,6 +178,7 @@ func resolveInbounds(ctx context.Context, cfg map[string]any, executablePath, re
 			"path":        nil,
 			"header_type": nil,
 			"flow":        nil,
+			"method":      nil,
 		}
 
 		stream := toMap(inb["streamSettings"])
@@ -241,6 +242,16 @@ func resolveInbounds(ctx context.Context, cfg map[string]any, executablePath, re
 		}
 
 		if protocol == "shadowsocks" || protocol == "shadowsocks2022" {
+			ssSettings := toMap(inb["settings"])
+			method := strings.ToLower(toString(ssSettings["method"]))
+			if method == "" {
+				if clients, ok := ssSettings["clients"].([]any); ok && len(clients) > 0 {
+					method = strings.ToLower(toString(toMap(clients[0])["method"]))
+				}
+			}
+			if method != "" {
+				settings["method"] = method
+			}
 			settings["network"] = nil
 		}
 
