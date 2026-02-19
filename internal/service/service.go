@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -297,7 +298,7 @@ func (s *Service) FetchBackends(ctx context.Context, _ *servicepb.Empty) (*servi
 		out.Backends = append(out.Backends, &servicepb.Backend{
 			Name:     name,
 			Type:     strPtr(b.Type()),
-			Version:  strPtr(b.Version()),
+			Version:  strPtr(sanitizeBackendVersion(b.Version())),
 			Inbounds: pbInbounds,
 		})
 	}
@@ -386,4 +387,12 @@ func strPtr(v string) *string {
 		return nil
 	}
 	return &v
+}
+
+func sanitizeBackendVersion(version string) string {
+	version = strings.TrimSpace(version)
+	if len(version) <= 32 {
+		return version
+	}
+	return version[:32]
 }

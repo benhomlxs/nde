@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -179,5 +181,23 @@ func (r *Runner) Version(ctx context.Context) string {
 	if err != nil {
 		return ""
 	}
-	return string(out)
+
+	raw := strings.TrimSpace(string(out))
+	if raw == "" {
+		return ""
+	}
+
+	// Keep version format DB-safe for panels that store backend version in VARCHAR(32).
+	if m := regexp.MustCompile(`\b\d+\.\d+\.\d+\b`).FindString(raw); m != "" {
+		return m
+	}
+
+	first := raw
+	if idx := strings.IndexByte(raw, '\n'); idx >= 0 {
+		first = strings.TrimSpace(raw[:idx])
+	}
+	if len(first) > 32 {
+		return first[:32]
+	}
+	return first
 }

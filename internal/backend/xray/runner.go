@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -196,12 +197,29 @@ func (r *Runner) Version(ctx context.Context) string {
 	if err != nil {
 		return ""
 	}
-	raw := string(out)
+
+	raw := strings.TrimSpace(string(out))
+	if raw == "" {
+		return ""
+	}
+
+	// Keep version format DB-safe for panels that store backend version in VARCHAR(32).
+	if m := regexp.MustCompile(`\b\d+\.\d+\.\d+\b`).FindString(raw); m != "" {
+		return m
+	}
+
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Xray ") {
-			return strings.TrimPrefix(line, "Xray ")
+		if line == "" {
+			continue
 		}
+		if strings.HasPrefix(line, "Xray ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "Xray "))
+		}
+		if len(line) > 32 {
+			return line[:32]
+		}
+		return line
 	}
 	return ""
 }
