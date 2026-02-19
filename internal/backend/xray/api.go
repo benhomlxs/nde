@@ -155,6 +155,21 @@ func (a *API) UserUsages(ctx context.Context, reset bool) (map[uint32]uint64, er
 	return out, nil
 }
 
+func (a *API) SysStats(ctx context.Context) error {
+	conn, err := a.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	client := statscmd.NewStatsServiceClient(conn)
+	_, err = client.GetSysStats(ctx, &statscmd.SysStatsRequest{})
+	if err != nil {
+		a.reset()
+		return err
+	}
+	return nil
+}
+
 func buildAccount(protocolName, seed, flow string, algo config.AuthAlgorithm) (proto.Message, error) {
 	switch strings.ToLower(protocolName) {
 	case "vmess":

@@ -28,6 +28,10 @@ type Config struct {
 	XrayVlessRealityFlow       string
 	XrayRestartOnFailure       bool
 	XrayRestartFailureInterval time.Duration
+	XrayHealthCheckEnabled     bool
+	XrayHealthCheckInterval    time.Duration
+	XrayHealthCheckTimeout     time.Duration
+	XrayHealthCheckFailures    int
 
 	SingBoxEnabled                  bool
 	SingBoxExecutablePath           string
@@ -62,8 +66,12 @@ func Load() Config {
 		XrayAssetsPath:             getenv("XRAY_ASSETS_PATH", "/usr/share/xray"),
 		XrayConfigPath:             getenv("XRAY_CONFIG_PATH", "/etc/xray/config.json"),
 		XrayVlessRealityFlow:       getenv("XRAY_VLESS_REALITY_FLOW", "xtls-rprx-vision"),
-		XrayRestartOnFailure:       getenvBool("XRAY_RESTART_ON_FAILURE", false),
-		XrayRestartFailureInterval: time.Duration(getenvInt("XRAY_RESTART_ON_FAILURE_INTERVAL", 0)) * time.Second,
+		XrayRestartOnFailure:       getenvBool("XRAY_RESTART_ON_FAILURE", true),
+		XrayRestartFailureInterval: time.Duration(getenvInt("XRAY_RESTART_ON_FAILURE_INTERVAL", 3)) * time.Second,
+		XrayHealthCheckEnabled:     getenvBool("XRAY_HEALTH_CHECK_ENABLED", true),
+		XrayHealthCheckInterval:    time.Duration(getenvInt("XRAY_HEALTH_CHECK_INTERVAL", 5)) * time.Second,
+		XrayHealthCheckTimeout:     time.Duration(getenvInt("XRAY_HEALTH_CHECK_TIMEOUT", 2)) * time.Second,
+		XrayHealthCheckFailures:    getenvInt("XRAY_HEALTH_CHECK_FAILURE_THRESHOLD", 3),
 
 		SingBoxEnabled:                  getenvBool("SING_BOX_ENABLED", false),
 		SingBoxExecutablePath:           getenv("SING_BOX_EXECUTABLE_PATH", "/usr/bin/sing-box"),
