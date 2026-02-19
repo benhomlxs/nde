@@ -53,7 +53,10 @@ type Backend struct {
 }
 
 var _ backend.Backend = (*Backend)(nil)
-var logger = slog.With("component", "backend.hysteria2")
+
+func backendLogger() *slog.Logger {
+	return slog.Default().With("component", "backend.hysteria2")
+}
 
 func NewBackend(cfg config.Config, store storage.Storage) *Backend {
 	b := &Backend{
@@ -384,7 +387,7 @@ func (b *Backend) monitorHealth(ctx context.Context) {
 				cancel()
 				if err != nil {
 					consecutiveFailures++
-					logger.Warn("health check failed", "failure_count", consecutiveFailures, "failure_threshold", maxFailures, "error", err)
+					backendLogger().Warn("health check failed", "failure_count", consecutiveFailures, "failure_threshold", maxFailures, "error", err)
 				} else {
 					consecutiveFailures = 0
 				}
@@ -396,19 +399,19 @@ func (b *Backend) monitorHealth(ctx context.Context) {
 			consecutiveFailures = 0
 
 			if !b.restartOnFailure {
-				logger.Warn("backend unhealthy but restart-on-failure disabled")
+				backendLogger().Warn("backend unhealthy but restart-on-failure disabled")
 				continue
 			}
 
 			if b.restartInterval > 0 {
 				time.Sleep(b.restartInterval)
 			}
-			logger.Warn("backend unhealthy, attempting restart")
+			backendLogger().Warn("backend unhealthy, attempting restart")
 			if err := b.Restart(context.Background(), raw); err != nil {
-				logger.Error("health restart failed", "error", err)
+				backendLogger().Error("health restart failed", "error", err)
 				continue
 			}
-			logger.Info("health restart succeeded")
+			backendLogger().Info("health restart succeeded")
 		}
 	}
 }

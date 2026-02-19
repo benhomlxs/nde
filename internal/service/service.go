@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,21 +29,52 @@ type Service struct {
 
 	lockMu    sync.Mutex
 	userLocks map[uint32]*sync.Mutex
+
+	syncUserApplyTimeout       time.Duration
+	repopulateUserApplyTimeout time.Duration
+	repopulateBulkThreshold    int
+	repopulateWorkers          int
+	userApplyRetries           int
+	userApplyRetryDelay        time.Duration
 }
 
 const repopulateMarkerUsername = "__marznode_repopulate__"
-const repopulateBulkThreshold = 200
-const repopulateWorkers = 8
-const repopulateUserApplyTimeout = 45 * time.Second
-
-var logger = slog.With("component", "service")
+const defaultSyncUserApplyTimeout = 90 * time.Second
+const defaultRepopulateUserApplyTimeout = 180 * time.Second
+const defaultRepopulateBulkThreshold = 200
+const defaultRepopulateWorkers = 16
+const defaultUserApplyRetries = 3
+const defaultUserApplyRetryDelay = 350 * time.Millisecond
 
 func New(store storage.Storage, backends map[string]backend.Backend) *Service {
-	return &Service{
-		store:     store,
-		backends:  backends,
-		userLocks: make(map[uint32]*sync.Mutex),
+	s := &Service{
+		store:                      store,
+		backends:                   backends,
+		userLocks:                  make(map[uint32]*sync.Mutex),
+		syncUserApplyTimeout:       defaultSyncUserApplyTimeout,
+		repopulateUserApplyTimeout: defaultRepopulateUserApplyTimeout,
+		repopulateBulkThreshold:    defaultRepopulateBulkThreshold,
+		repopulateWorkers:          defaultRepopulateWorkers,
+		userApplyRetries:           defaultUserApplyRetries,
+		userApplyRetryDelay:        defaultUserApplyRetryDelay,
 	}
+	if s.repopulateWorkers < 1 {
+		s.repopulateWorkers = 1
+	}
+	if s.repopulateBulkThreshold < 1 {
+		s.repopulateBulkThreshold = 1
+	}
+	if s.userApplyRetries < 1 {
+		s.userApplyRetries = 1
+	}
+	if s.userApplyRetryDelay <= 0 {
+		s.userApplyRetryDelay = 100 * time.Millisecond
+	}
+	return s
+}
+
+func serviceLogger() *slog.Logger {
+	return slog.Default().With("component", "service")
 }
 
 func (s *Service) lockUser(uid uint32) func() {
@@ -71,7 +103,7 @@ func (s *Service) addUser(ctx context.Context, user models.User, inbounds []mode
 	for _, inb := range inbounds {
 		b, err := s.backendByTag(inb.Tag)
 		if err != nil {
-			logger.Warn("add user skipped", "uid", user.ID, "username", user.Username, "tag", inb.Tag, "reason", err)
+			serviceLogger().Warn("add user skipped", "uid", user.ID, "username", user.Username, "tag", inb.Tag, "reason", err)
 			continue
 		}
 		if err := b.AddUser(ctx, user, inb); err != nil {
@@ -85,7 +117,7 @@ func (s *Service) removeUser(ctx context.Context, user models.User, inbounds []m
 	for _, inb := range inbounds {
 		b, err := s.backendByTag(inb.Tag)
 		if err != nil {
-			logger.Warn("remove user skipped", "uid", user.ID, "username", user.Username, "tag", inb.Tag, "reason", err)
+			serviceLogger().Warn("remove user skipped", "uid", user.ID, "username", user.Username, "tag", inb.Tag, "reason", err)
 			continue
 		}
 		if err := b.RemoveUser(ctx, user, inb); err != nil {
@@ -203,6 +235,55 @@ func (s *Service) applyUserData(ctx context.Context, data *servicepb.UserData) e
 	return nil
 }
 
+func (s *Service) applyUserDataWithRetry(ctx context.Context, data *servicepb.UserData, perAttemptTimeout time.Duration) error {
+	if s.userApplyRetries <= 1 {
+		return s.applyUserDataWithTimeout(ctx, data, perAttemptTimeout)
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= s.userApplyRetries; attempt++ {
+		err := s.applyUserDataWithTimeout(ctx, data, perAttemptTimeout)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			break
+		}
+		if attempt == s.userApplyRetries {
+			break
+		}
+		if err := waitWithContext(ctx, s.userApplyRetryDelay); err != nil {
+			lastErr = errors.Join(lastErr, err)
+			break
+		}
+	}
+	return lastErr
+}
+
+func (s *Service) applyUserDataWithTimeout(ctx context.Context, data *servicepb.UserData, timeout time.Duration) error {
+	if timeout <= 0 {
+		return s.applyUserData(ctx, data)
+	}
+	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return s.applyUserData(attemptCtx, data)
+}
+
+func waitWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData, servicepb.Empty]) error {
 	ctx := stream.Context()
 	repopulateMode := false
@@ -238,12 +319,10 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 			continue
 		}
 
-		uCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		err = s.applyUserData(uCtx, msg)
-		cancel()
+		err = s.applyUserDataWithRetry(ctx, msg, s.syncUserApplyTimeout)
 		if err != nil {
 			u := msg.GetUser()
-			logger.Warn("sync user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
+			serviceLogger().Warn("sync user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
 			continue
 		}
 	}
@@ -251,16 +330,14 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 
 func (s *Service) applyRepopulateStream(repopulateData []*servicepb.UserData, keep map[uint32]struct{}) {
 	ctx := context.Background()
-	if len(repopulateData) >= repopulateBulkThreshold {
+	if len(repopulateData) >= s.repopulateBulkThreshold {
 		s.applyRepopulateBulk(ctx, repopulateData)
 	} else {
 		for _, msg := range repopulateData {
-			uCtx, cancel := context.WithTimeout(ctx, repopulateUserApplyTimeout)
-			err := s.applyUserData(uCtx, msg)
-			cancel()
+			err := s.applyUserDataWithRetry(ctx, msg, s.repopulateUserApplyTimeout)
 			if err != nil {
 				u := msg.GetUser()
-				logger.Warn("repopulate user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
+				serviceLogger().Warn("repopulate user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
 			}
 		}
 	}
@@ -270,11 +347,11 @@ func (s *Service) applyRepopulateStream(repopulateData []*servicepb.UserData, ke
 		if _, ok := keep[user.ID]; ok {
 			continue
 		}
-		uCtx, cancel := context.WithTimeout(ctx, repopulateUserApplyTimeout)
+		uCtx, cancel := context.WithTimeout(ctx, s.repopulateUserApplyTimeout)
 		err := s.removeUser(uCtx, user, user.Inbounds)
 		cancel()
 		if err != nil {
-			logger.Warn("repopulate stream cleanup skipped", "uid", user.ID, "username", user.Username, "error", err)
+			serviceLogger().Warn("repopulate stream cleanup skipped", "uid", user.ID, "username", user.Username, "error", err)
 			continue
 		}
 		s.store.RemoveUser(user.ID)
@@ -286,7 +363,7 @@ func (s *Service) applyRepopulateBulk(ctx context.Context, repopulateData []*ser
 		data *servicepb.UserData
 	}
 
-	workers := repopulateWorkers
+	workers := s.repopulateWorkers
 	if workers < 1 {
 		workers = 1
 	}
@@ -304,12 +381,10 @@ func (s *Service) applyRepopulateBulk(ctx context.Context, repopulateData []*ser
 		go func() {
 			defer wg.Done()
 			for item := range jobs {
-				uCtx, cancel := context.WithTimeout(ctx, repopulateUserApplyTimeout)
-				err := s.applyUserData(uCtx, item.data)
-				cancel()
+				err := s.applyUserDataWithRetry(ctx, item.data, s.repopulateUserApplyTimeout)
 				if err != nil {
 					u := item.data.GetUser()
-					logger.Warn("repopulate bulk user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
+					serviceLogger().Warn("repopulate bulk user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
 				}
 			}
 		}()
@@ -324,12 +399,10 @@ func (s *Service) applyRepopulateBulk(ctx context.Context, repopulateData []*ser
 
 func (s *Service) RepopulateUsers(ctx context.Context, req *servicepb.UsersData) (*servicepb.Empty, error) {
 	for _, userData := range req.GetUsersData() {
-		uCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		err := s.applyUserData(uCtx, userData)
-		cancel()
+		err := s.applyUserDataWithRetry(ctx, userData, s.repopulateUserApplyTimeout)
 		if err != nil {
 			u := userData.GetUser()
-			logger.Warn("repopulate user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
+			serviceLogger().Warn("repopulate user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
 			continue
 		}
 	}
@@ -343,8 +416,11 @@ func (s *Service) RepopulateUsers(ctx context.Context, req *servicepb.UsersData)
 		if _, ok := keep[user.ID]; ok {
 			continue
 		}
-		if err := s.removeUser(ctx, user, user.Inbounds); err != nil {
-			logger.Warn("repopulate cleanup skipped", "uid", user.ID, "username", user.Username, "error", err)
+		uCtx, cancel := context.WithTimeout(ctx, s.repopulateUserApplyTimeout)
+		err := s.removeUser(uCtx, user, user.Inbounds)
+		cancel()
+		if err != nil {
+			serviceLogger().Warn("repopulate cleanup skipped", "uid", user.ID, "username", user.Username, "error", err)
 			continue
 		}
 		s.store.RemoveUser(user.ID)
@@ -440,9 +516,12 @@ func (s *Service) RestartBackend(ctx context.Context, req *servicepb.RestartBack
 	if req.GetConfig() != nil {
 		cfg = req.GetConfig().GetConfiguration()
 	}
+	serviceLogger().Info("backend restart requested", "backend", req.GetBackendName())
 	if err := b.Restart(ctx, cfg); err != nil {
+		serviceLogger().Error("backend restart failed", "backend", req.GetBackendName(), "error", err)
 		return nil, status.Errorf(codes.Unavailable, "backend restart failed: %v", err)
 	}
+	serviceLogger().Info("backend restart completed", "backend", req.GetBackendName())
 	return &servicepb.Empty{}, nil
 }
 

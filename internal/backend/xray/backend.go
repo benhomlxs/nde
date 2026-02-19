@@ -42,10 +42,15 @@ type Backend struct {
 
 	restartMu   sync.Mutex
 	stopPlanned atomic.Bool
+
+	repopulateRunning atomic.Bool
 }
 
 var _ backend.Backend = (*Backend)(nil)
-var logger = slog.With("component", "backend.xray")
+
+func backendLogger() *slog.Logger {
+	return slog.Default().With("component", "backend.xray")
+}
 
 func NewBackend(cfg config.Config, store storage.Storage) *Backend {
 	b := &Backend{
@@ -143,10 +148,27 @@ func (b *Backend) Start(ctx context.Context, backendConfig string) error {
 	b.rawConfig = backendConfig
 	b.mu.Unlock()
 
-	_ = util.Retry(ctx, 6, 300*time.Millisecond, func() error {
-		return b.repopulateStorageUsers(ctx)
-	})
+	b.startRepopulateStorageUsers()
 	return nil
+}
+
+func (b *Backend) startRepopulateStorageUsers() {
+	if !b.repopulateRunning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer b.repopulateRunning.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		defer cancel()
+		err := util.Retry(ctx, 6, 400*time.Millisecond, func() error {
+			return b.repopulateStorageUsers(ctx)
+		})
+		if err != nil {
+			backendLogger().Warn("background user repopulate finished with errors", "error", err)
+			return
+		}
+		backendLogger().Info("background user repopulate completed")
+	}()
 }
 
 func (b *Backend) repopulateStorageUsers(ctx context.Context) error {
@@ -287,7 +309,9 @@ func (b *Backend) monitorFailures(ctx context.Context) {
 			b.mu.RLock()
 			raw := b.rawConfig
 			b.mu.RUnlock()
-			_ = b.Restart(context.Background(), raw)
+			if err := b.Restart(context.Background(), raw); err != nil {
+				backendLogger().Error("restart on process exit failed", "error", err)
+			}
 		}
 	}
 }
@@ -342,18 +366,18 @@ func (b *Backend) monitorHealth(ctx context.Context) {
 			}
 
 			consecutiveFailures++
-			logger.Warn("health check failed", "failure_count", consecutiveFailures, "failure_threshold", maxFailures, "error", err)
+			backendLogger().Warn("health check failed", "failure_count", consecutiveFailures, "failure_threshold", maxFailures, "error", err)
 			if consecutiveFailures < maxFailures {
 				continue
 			}
 
 			consecutiveFailures = 0
-			logger.Warn("backend unhealthy, attempting restart")
+			backendLogger().Warn("backend unhealthy, attempting restart")
 			if err := b.Restart(context.Background(), raw); err != nil {
-				logger.Error("health restart failed", "error", err)
+				backendLogger().Error("health restart failed", "error", err)
 				continue
 			}
-			logger.Info("health restart succeeded")
+			backendLogger().Info("health restart succeeded")
 		}
 	}
 }

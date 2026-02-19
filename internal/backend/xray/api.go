@@ -35,6 +35,8 @@ type API struct {
 	conn *grpc.ClientConn
 }
 
+const apiCallTimeout = 8 * time.Second
+
 func NewAPI(port int) *API {
 	return &API{
 		address: fmt.Sprintf("127.0.0.1:%d", port),
@@ -92,7 +94,9 @@ func (a *API) AddUser(
 	}
 
 	client := proxymancommand.NewHandlerServiceClient(conn)
-	_, err = client.AlterInbound(ctx, &proxymancommand.AlterInboundRequest{
+	rpcCtx, cancel := context.WithTimeout(ctx, apiCallTimeout)
+	defer cancel()
+	_, err = client.AlterInbound(rpcCtx, &proxymancommand.AlterInboundRequest{
 		Tag:       tag,
 		Operation: serial.ToTypedMessage(&proxymancommand.AddUserOperation{User: user}),
 	})
@@ -113,7 +117,9 @@ func (a *API) RemoveUser(ctx context.Context, tag string, uid uint32, username s
 	}
 
 	client := proxymancommand.NewHandlerServiceClient(conn)
-	_, err = client.AlterInbound(ctx, &proxymancommand.AlterInboundRequest{
+	rpcCtx, cancel := context.WithTimeout(ctx, apiCallTimeout)
+	defer cancel()
+	_, err = client.AlterInbound(rpcCtx, &proxymancommand.AlterInboundRequest{
 		Tag: tag,
 		Operation: serial.ToTypedMessage(
 			&proxymancommand.RemoveUserOperation{Email: auth.UserIdentifier(uid, username)},
@@ -136,7 +142,9 @@ func (a *API) UserUsages(ctx context.Context, reset bool) (map[uint32]uint64, er
 	}
 
 	client := statscmd.NewStatsServiceClient(conn)
-	resp, err := client.QueryStats(ctx, &statscmd.QueryStatsRequest{
+	rpcCtx, cancel := context.WithTimeout(ctx, apiCallTimeout)
+	defer cancel()
+	resp, err := client.QueryStats(rpcCtx, &statscmd.QueryStatsRequest{
 		Pattern: "user>>>",
 		Reset_:  reset,
 	})
@@ -170,7 +178,9 @@ func (a *API) SysStats(ctx context.Context) error {
 	}
 
 	client := statscmd.NewStatsServiceClient(conn)
-	_, err = client.GetSysStats(ctx, &statscmd.SysStatsRequest{})
+	rpcCtx, cancel := context.WithTimeout(ctx, apiCallTimeout)
+	defer cancel()
+	_, err = client.GetSysStats(rpcCtx, &statscmd.SysStatsRequest{})
 	if err != nil {
 		a.reset()
 		return err

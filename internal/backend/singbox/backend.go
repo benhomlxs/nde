@@ -48,7 +48,10 @@ type Backend struct {
 }
 
 var _ backend.Backend = (*Backend)(nil)
-var logger = slog.With("component", "backend.sing-box")
+
+func backendLogger() *slog.Logger {
+	return slog.Default().With("component", "backend.sing-box")
+}
 
 func NewBackend(cfg config.Config, store storage.Storage) *Backend {
 	b := &Backend{
@@ -322,7 +325,9 @@ func (b *Backend) monitorFailures(ctx context.Context) {
 			b.mu.RLock()
 			raw := b.rawConfig
 			b.mu.RUnlock()
-			_ = b.Restart(context.Background(), raw)
+			if err := b.Restart(context.Background(), raw); err != nil {
+				backendLogger().Error("restart on process exit failed", "error", err)
+			}
 		}
 	}
 }
@@ -377,18 +382,18 @@ func (b *Backend) monitorHealth(ctx context.Context) {
 			}
 
 			consecutiveFailures++
-			logger.Warn("health check failed", "failure_count", consecutiveFailures, "failure_threshold", maxFailures, "error", err)
+			backendLogger().Warn("health check failed", "failure_count", consecutiveFailures, "failure_threshold", maxFailures, "error", err)
 			if consecutiveFailures < maxFailures {
 				continue
 			}
 
 			consecutiveFailures = 0
-			logger.Warn("backend unhealthy, attempting restart")
+			backendLogger().Warn("backend unhealthy, attempting restart")
 			if err := b.Restart(context.Background(), raw); err != nil {
-				logger.Error("health restart failed", "error", err)
+				backendLogger().Error("health restart failed", "error", err)
 				continue
 			}
-			logger.Info("health restart succeeded")
+			backendLogger().Info("health restart succeeded")
 		}
 	}
 }
