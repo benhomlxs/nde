@@ -36,6 +36,7 @@ func NewRunner(executablePath string) *Runner {
 }
 
 func (r *Runner) Start(ctx context.Context, configPath string) error {
+	_ = ctx
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -43,7 +44,8 @@ func (r *Runner) Start(ctx context.Context, configPath string) error {
 		return errors.New("sing-box already running")
 	}
 
-	cmd := exec.CommandContext(ctx, r.executablePath, "run", "--disable-color", "-c", configPath)
+	// Do not bind daemon lifetime to RPC/request context.
+	cmd := exec.Command(r.executablePath, "run", "--disable-color", "-c", configPath)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return err

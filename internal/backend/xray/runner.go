@@ -43,8 +43,9 @@ func (r *Runner) Start(ctx context.Context, configJSON string) error {
 		return errors.New("xray already running")
 	}
 
-	cmd := exec.CommandContext(ctx, r.executablePath, "run", "-config", "stdin:")
-	cmd.Env = append(cmd.Env, "XRAY_LOCATION_ASSET="+r.assetsPath)
+	// Do not bind daemon lifetime to RPC/request context.
+	cmd := exec.Command(r.executablePath, "run", "-config", "stdin:")
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+r.assetsPath)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

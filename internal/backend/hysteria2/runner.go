@@ -31,6 +31,7 @@ func NewRunner(executablePath string) *Runner {
 }
 
 func (r *Runner) Start(ctx context.Context, renderedConfig string) error {
+	_ = ctx
 	tmp, err := os.CreateTemp("", "hysteria-*.yaml")
 	if err != nil {
 		return err
@@ -41,7 +42,8 @@ func (r *Runner) Start(ctx context.Context, renderedConfig string) error {
 	}
 	_ = tmp.Close()
 
-	cmd := exec.CommandContext(ctx, r.executablePath, "server", "-c", tmp.Name())
+	// Do not bind daemon lifetime to RPC/request context.
+	cmd := exec.Command(r.executablePath, "server", "-c", tmp.Name())
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return err
