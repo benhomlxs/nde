@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"marznode/internal/auth"
@@ -31,6 +33,13 @@ type Backend struct {
 	store  storage.Storage
 	runner *Runner
 
+	restartOnFailure bool
+	restartInterval  time.Duration
+	healthEnabled    bool
+	healthInterval   time.Duration
+	healthTimeout    time.Duration
+	healthFailures   int
+
 	mu          sync.RWMutex
 	usersByPass map[string]models.User
 	inbounds    []models.Inbound
@@ -39,21 +48,30 @@ type Backend struct {
 	statsSecret string
 	rawConfig   string
 
-	restartMu sync.Mutex
+	restartMu   sync.Mutex
+	stopPlanned atomic.Bool
 }
 
 var _ backend.Backend = (*Backend)(nil)
 
 func NewBackend(cfg config.Config, store storage.Storage) *Backend {
-	return &Backend{
+	b := &Backend{
 		name:           "hysteria2",
 		executablePath: cfg.HysteriaExecutablePath,
 		configPath:     cfg.HysteriaConfigPath,
 		authAlgo:       cfg.AuthGenerationAlgorithm,
+		restartOnFailure: cfg.HysteriaRestartOnFailure,
+		restartInterval:  cfg.HysteriaRestartFailureInterval,
+		healthEnabled:    cfg.HysteriaHealthCheckEnabled,
+		healthInterval:   cfg.HysteriaHealthCheckInterval,
+		healthTimeout:    cfg.HysteriaHealthCheckTimeout,
+		healthFailures:   cfg.HysteriaHealthCheckFailures,
 		store:          store,
 		runner:         NewRunner(cfg.HysteriaExecutablePath),
 		usersByPass:    make(map[string]models.User),
 	}
+	go b.monitorHealth(context.Background())
+	return b
 }
 
 func (b *Backend) Name() string { return b.name }
@@ -169,6 +187,9 @@ func (b *Backend) stopAuthServer(ctx context.Context) error {
 }
 
 func (b *Backend) Stop(ctx context.Context) error {
+	b.stopPlanned.Store(true)
+	defer b.stopPlanned.Store(false)
+
 	_ = b.stopAuthServer(ctx)
 	b.store.RemoveInbound("hysteria2")
 	return b.runner.Stop(ctx)
@@ -217,22 +238,44 @@ func (b *Backend) RemoveUser(ctx context.Context, user models.User, inbound mode
 }
 
 func (b *Backend) GetUsages(ctx context.Context, reset bool) (map[uint32]uint64, error) {
-	_ = reset
+	raw, err := b.fetchTraffic(ctx, reset)
+	if err != nil {
+		return map[uint32]uint64{}, nil
+	}
+
+	out := make(map[uint32]uint64, len(raw))
+	for ident, usage := range raw {
+		var uid uint32
+		_, _ = fmt.Sscanf(strings.SplitN(ident, ".", 2)[0], "%d", &uid)
+		out[uid] = usage["tx"] + usage["rx"]
+	}
+	return out, nil
+}
+
+func (b *Backend) fetchTraffic(ctx context.Context, clear bool) (map[string]map[string]uint64, error) {
 	b.mu.RLock()
 	statsPort := b.statsPort
 	secret := b.statsSecret
 	b.mu.RUnlock()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/traffic?clear=1", statsPort), nil)
+	clearValue := "0"
+	if clear {
+		clearValue = "1"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/traffic?clear=%s", statsPort, clearValue), nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", secret)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return map[uint32]uint64{}, nil
+		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("traffic endpoint returned status %d", resp.StatusCode)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -242,13 +285,7 @@ func (b *Backend) GetUsages(ctx context.Context, reset bool) (map[uint32]uint64,
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, err
 	}
-	out := make(map[uint32]uint64, len(raw))
-	for ident, usage := range raw {
-		var uid uint32
-		_, _ = fmt.Sscanf(strings.SplitN(ident, ".", 2)[0], "%d", &uid)
-		out[uid] = usage["tx"] + usage["rx"]
-	}
-	return out, nil
+	return raw, nil
 }
 
 func (b *Backend) LogStream(ctx context.Context, includeBuffer bool) (<-chan string, error) {
@@ -300,4 +337,77 @@ func randomHex(n int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+func (b *Backend) monitorHealth(ctx context.Context) {
+	if !b.healthEnabled {
+		return
+	}
+
+	interval := b.healthInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	timeout := b.healthTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	maxFailures := b.healthFailures
+	if maxFailures <= 0 {
+		maxFailures = 3
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	consecutiveFailures := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if b.stopPlanned.Load() {
+				consecutiveFailures = 0
+				continue
+			}
+
+			b.mu.RLock()
+			raw := b.rawConfig
+			b.mu.RUnlock()
+
+			if !b.Running() {
+				consecutiveFailures++
+			} else {
+				hCtx, cancel := context.WithTimeout(ctx, timeout)
+				_, err := b.fetchTraffic(hCtx, false)
+				cancel()
+				if err != nil {
+					consecutiveFailures++
+					log.Printf("hysteria2 health check failed (%d/%d): %v", consecutiveFailures, maxFailures, err)
+				} else {
+					consecutiveFailures = 0
+				}
+			}
+
+			if consecutiveFailures < maxFailures {
+				continue
+			}
+			consecutiveFailures = 0
+
+			if !b.restartOnFailure {
+				log.Printf("hysteria2 unhealthy but restart-on-failure disabled")
+				continue
+			}
+
+			if b.restartInterval > 0 {
+				time.Sleep(b.restartInterval)
+			}
+			log.Printf("hysteria2 unhealthy, attempting restart")
+			if err := b.Restart(context.Background(), raw); err != nil {
+				log.Printf("hysteria2 health restart failed: %v", err)
+				continue
+			}
+			log.Printf("hysteria2 health restart succeeded")
+		}
+	}
 }

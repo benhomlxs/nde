@@ -84,3 +84,18 @@ func (c *StatsClient) UserUsages(ctx context.Context, reset bool) (map[uint32]ui
 	}
 	return out, nil
 }
+
+func (c *StatsClient) SysStats(ctx context.Context) error {
+	conn, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	client := sbstatspb.NewStatsServiceClient(conn)
+	_, err = client.GetSysStats(ctx, &sbstatspb.SysStatsRequest{})
+	if err != nil {
+		c.reset()
+		return err
+	}
+	return nil
+}

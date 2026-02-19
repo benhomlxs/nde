@@ -39,10 +39,20 @@ type Config struct {
 	SingBoxRestartOnFailure         bool
 	SingBoxRestartFailureInterval   time.Duration
 	SingBoxUserModificationInterval time.Duration
+	SingBoxHealthCheckEnabled       bool
+	SingBoxHealthCheckInterval      time.Duration
+	SingBoxHealthCheckTimeout       time.Duration
+	SingBoxHealthCheckFailures      int
 
 	HysteriaEnabled        bool
 	HysteriaExecutablePath string
 	HysteriaConfigPath     string
+	HysteriaRestartOnFailure       bool
+	HysteriaRestartFailureInterval time.Duration
+	HysteriaHealthCheckEnabled     bool
+	HysteriaHealthCheckInterval    time.Duration
+	HysteriaHealthCheckTimeout     time.Duration
+	HysteriaHealthCheckFailures    int
 
 	SSLCertFile       string
 	SSLKeyFile        string
@@ -76,13 +86,23 @@ func Load() Config {
 		SingBoxEnabled:                  getenvBool("SING_BOX_ENABLED", false),
 		SingBoxExecutablePath:           getenv("SING_BOX_EXECUTABLE_PATH", "/usr/bin/sing-box"),
 		SingBoxConfigPath:               getenv("SING_BOX_CONFIG_PATH", "/etc/sing-box/config.json"),
-		SingBoxRestartOnFailure:         getenvBool("SING_BOX_RESTART_ON_FAILURE", false),
-		SingBoxRestartFailureInterval:   time.Duration(getenvInt("SING_BOX_RESTART_ON_FAILURE_INTERVAL", 0)) * time.Second,
+		SingBoxRestartOnFailure:         getenvBool("SING_BOX_RESTART_ON_FAILURE", true),
+		SingBoxRestartFailureInterval:   time.Duration(getenvInt("SING_BOX_RESTART_ON_FAILURE_INTERVAL", 3)) * time.Second,
 		SingBoxUserModificationInterval: time.Duration(getenvInt("SING_BOX_USER_MODIFICATION_INTERVAL", 30)) * time.Second,
+		SingBoxHealthCheckEnabled:       getenvBool("SING_BOX_HEALTH_CHECK_ENABLED", true),
+		SingBoxHealthCheckInterval:      time.Duration(getenvInt("SING_BOX_HEALTH_CHECK_INTERVAL", 5)) * time.Second,
+		SingBoxHealthCheckTimeout:       time.Duration(getenvInt("SING_BOX_HEALTH_CHECK_TIMEOUT", 2)) * time.Second,
+		SingBoxHealthCheckFailures:      getenvInt("SING_BOX_HEALTH_CHECK_FAILURE_THRESHOLD", 3),
 
 		HysteriaEnabled:        getenvBool("HYSTERIA_ENABLED", false),
 		HysteriaExecutablePath: getenv("HYSTERIA_EXECUTABLE_PATH", "/usr/bin/hysteria"),
 		HysteriaConfigPath:     getenv("HYSTERIA_CONFIG_PATH", "/etc/hysteria/config.yaml"),
+		HysteriaRestartOnFailure:       getenvBool("HYSTERIA_RESTART_ON_FAILURE", true),
+		HysteriaRestartFailureInterval: time.Duration(getenvInt("HYSTERIA_RESTART_ON_FAILURE_INTERVAL", 3)) * time.Second,
+		HysteriaHealthCheckEnabled:     getenvBool("HYSTERIA_HEALTH_CHECK_ENABLED", true),
+		HysteriaHealthCheckInterval:    time.Duration(getenvInt("HYSTERIA_HEALTH_CHECK_INTERVAL", 5)) * time.Second,
+		HysteriaHealthCheckTimeout:     time.Duration(getenvInt("HYSTERIA_HEALTH_CHECK_TIMEOUT", 2)) * time.Second,
+		HysteriaHealthCheckFailures:    getenvInt("HYSTERIA_HEALTH_CHECK_FAILURE_THRESHOLD", 3),
 
 		SSLCertFile:       getenv("SSL_CERT_FILE", "./ssl_cert.pem"),
 		SSLKeyFile:        getenv("SSL_KEY_FILE", "./ssl_key.pem"),

@@ -158,7 +158,7 @@ func resolveInbounds(ctx context.Context, cfg map[string]any, executablePath, re
 		}
 		protocol := strings.ToLower(toString(inb["protocol"]))
 		if _, allowed := map[string]struct{}{
-			"vmess": {}, "trojan": {}, "vless": {}, "shadowsocks": {},
+			"vmess": {}, "trojan": {}, "vless": {}, "shadowsocks": {}, "shadowsocks2022": {},
 		}[protocol]; !allowed {
 			continue
 		}
@@ -240,7 +240,7 @@ func resolveInbounds(ctx context.Context, cfg map[string]any, executablePath, re
 			settings["host"] = toStringSlice(netSettings["host"])
 		}
 
-		if protocol == "shadowsocks" {
+		if protocol == "shadowsocks" || protocol == "shadowsocks2022" {
 			settings["network"] = nil
 		}
 

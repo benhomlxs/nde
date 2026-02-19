@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,10 @@ type Backend struct {
 	restartOnFailure bool
 	restartInterval  time.Duration
 	userUpdateTick   time.Duration
+	healthEnabled    bool
+	healthInterval   time.Duration
+	healthTimeout    time.Duration
+	healthFailures   int
 
 	store  storage.Storage
 	runner *Runner
@@ -55,11 +60,16 @@ func NewBackend(cfg config.Config, store storage.Storage) *Backend {
 		restartOnFailure: cfg.SingBoxRestartOnFailure,
 		restartInterval:  cfg.SingBoxRestartFailureInterval,
 		userUpdateTick:   cfg.SingBoxUserModificationInterval,
+		healthEnabled:    cfg.SingBoxHealthCheckEnabled,
+		healthInterval:   cfg.SingBoxHealthCheckInterval,
+		healthTimeout:    cfg.SingBoxHealthCheckTimeout,
+		healthFailures:   cfg.SingBoxHealthCheckFailures,
 		store:            store,
 		runner:           NewRunner(cfg.SingBoxExecutablePath),
 	}
 	go b.monitorFailures(context.Background())
 	go b.userUpdateWorker(context.Background())
+	go b.monitorHealth(context.Background())
 	return b
 }
 
@@ -312,6 +322,72 @@ func (b *Backend) monitorFailures(ctx context.Context) {
 			raw := b.rawConfig
 			b.mu.RUnlock()
 			_ = b.Restart(context.Background(), raw)
+		}
+	}
+}
+
+func (b *Backend) monitorHealth(ctx context.Context) {
+	if !b.healthEnabled {
+		return
+	}
+
+	interval := b.healthInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	timeout := b.healthTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	maxFailures := b.healthFailures
+	if maxFailures <= 0 {
+		maxFailures = 3
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	consecutiveFailures := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if b.stopPlanned.Load() || !b.Running() {
+				consecutiveFailures = 0
+				continue
+			}
+
+			b.mu.RLock()
+			stats := b.stats
+			raw := b.rawConfig
+			b.mu.RUnlock()
+			if stats == nil {
+				consecutiveFailures = 0
+				continue
+			}
+
+			hCtx, cancel := context.WithTimeout(ctx, timeout)
+			err := stats.SysStats(hCtx)
+			cancel()
+			if err == nil {
+				consecutiveFailures = 0
+				continue
+			}
+
+			consecutiveFailures++
+			log.Printf("sing-box health check failed (%d/%d): %v", consecutiveFailures, maxFailures, err)
+			if consecutiveFailures < maxFailures {
+				continue
+			}
+
+			consecutiveFailures = 0
+			log.Printf("sing-box unhealthy, attempting restart")
+			if err := b.Restart(context.Background(), raw); err != nil {
+				log.Printf("sing-box health restart failed: %v", err)
+				continue
+			}
+			log.Printf("sing-box health restart succeeded")
 		}
 	}
 }

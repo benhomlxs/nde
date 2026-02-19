@@ -188,6 +188,8 @@ func buildAccount(protocolName, seed, flow string, algo config.AuthAlgorithm) (p
 		return &trojan.Account{Password: auth.GeneratePassword(seed, algo)}, nil
 	case "shadowsocks":
 		return &shadowsocks.Account{Password: auth.GeneratePassword(seed, algo)}, nil
+	case "shadowsocks2022":
+		return &shadowsocks.Account{Password: auth.GeneratePassword(seed, algo)}, nil
 	default:
 		return nil, fmt.Errorf("unsupported protocol: %s", protocolName)
 	}
