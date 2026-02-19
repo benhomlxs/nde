@@ -29,6 +29,8 @@ type Service struct {
 	userLocks map[uint32]*sync.Mutex
 }
 
+const repopulateMarkerUsername = "__marznode_repopulate__"
+
 func New(store storage.Storage, backends map[string]backend.Backend) *Service {
 	return &Service{
 		store:     store,
@@ -120,6 +122,14 @@ func (s *Service) resolveInbounds(tags []string) []models.Inbound {
 	return s.store.ListInbounds(unique)
 }
 
+func isRepopulateMarker(msg *servicepb.UserData) bool {
+	if msg == nil || msg.GetUser() == nil {
+		return false
+	}
+	// User IDs are expected to be >= 1 in normal operation, so ID=0 is safe as a control marker.
+	return msg.GetUser().GetId() == 0 && msg.GetUser().GetUsername() == repopulateMarkerUsername
+}
+
 func (s *Service) applyUserData(ctx context.Context, data *servicepb.UserData) error {
 	user := pbUserToModel(data.GetUser())
 	if user.ID == 0 || user.Username == "" {
@@ -187,14 +197,46 @@ func (s *Service) applyUserData(ctx context.Context, data *servicepb.UserData) e
 
 func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData, servicepb.Empty]) error {
 	ctx := stream.Context()
+	repopulateMode := false
+	first := true
+	keep := map[uint32]struct{}{}
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
+			if repopulateMode {
+				existing := s.store.ListUsers()
+				for _, user := range existing {
+					if _, ok := keep[user.ID]; ok {
+						continue
+					}
+					if err := s.removeUser(ctx, user, user.Inbounds); err != nil {
+						log.Printf("repopulate stream cleanup skipped uid=%d username=%q error=%v", user.ID, user.Username, err)
+						continue
+					}
+					s.store.RemoveUser(user.ID)
+				}
+			}
 			return stream.SendAndClose(&servicepb.Empty{})
 		}
 		if err != nil {
 			return err
 		}
+
+		if first {
+			first = false
+			if isRepopulateMarker(msg) {
+				repopulateMode = true
+				continue
+			}
+		}
+
+		if repopulateMode {
+			u := msg.GetUser()
+			if u != nil && u.GetId() != 0 {
+				keep[u.GetId()] = struct{}{}
+			}
+		}
+
 		uCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		err = s.applyUserData(uCtx, msg)
 		cancel()
