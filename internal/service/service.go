@@ -33,6 +33,7 @@ type Service struct {
 	syncUserApplyTimeout       time.Duration
 	repopulateUserApplyTimeout time.Duration
 	repopulateBulkThreshold    int
+	repopulateChunkSize        int
 	repopulateWorkers          int
 	userApplyRetries           int
 	userApplyRetryDelay        time.Duration
@@ -47,6 +48,7 @@ const repopulateMarkerUsername = "__marznode_repopulate__"
 const defaultSyncUserApplyTimeout = 90 * time.Second
 const defaultRepopulateUserApplyTimeout = 180 * time.Second
 const defaultRepopulateBulkThreshold = 200
+const defaultRepopulateChunkSize = 512
 const defaultRepopulateWorkers = 16
 const defaultUserApplyRetries = 3
 const defaultUserApplyRetryDelay = 350 * time.Millisecond
@@ -59,6 +61,7 @@ func New(store storage.Storage, backends map[string]backend.Backend) *Service {
 		syncUserApplyTimeout:       defaultSyncUserApplyTimeout,
 		repopulateUserApplyTimeout: defaultRepopulateUserApplyTimeout,
 		repopulateBulkThreshold:    defaultRepopulateBulkThreshold,
+		repopulateChunkSize:        defaultRepopulateChunkSize,
 		repopulateWorkers:          defaultRepopulateWorkers,
 		userApplyRetries:           defaultUserApplyRetries,
 		userApplyRetryDelay:        defaultUserApplyRetryDelay,
@@ -68,6 +71,9 @@ func New(store storage.Storage, backends map[string]backend.Backend) *Service {
 	}
 	if s.repopulateBulkThreshold < 1 {
 		s.repopulateBulkThreshold = 1
+	}
+	if s.repopulateChunkSize < 1 {
+		s.repopulateChunkSize = 1
 	}
 	if s.userApplyRetries < 1 {
 		s.userApplyRetries = 1
@@ -308,12 +314,13 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 	repopulateMode := false
 	first := true
 	keep := map[uint32]struct{}{}
-	repopulateData := make([]*servicepb.UserData, 0)
+	repopulateData := make([]*servicepb.UserData, 0, s.repopulateChunkSize)
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
 			if repopulateMode {
-				s.applyRepopulateStream(repopulateData, keep)
+				s.applyRepopulateChunk(ctx, repopulateData)
+				s.cleanupRepopulateUsers(ctx, keep)
 			}
 			return stream.SendAndClose(&servicepb.Empty{})
 		}
@@ -335,6 +342,10 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 				keep[u.GetId()] = struct{}{}
 			}
 			repopulateData = append(repopulateData, msg)
+			if len(repopulateData) >= s.repopulateChunkSize {
+				s.applyRepopulateChunk(ctx, repopulateData)
+				repopulateData = repopulateData[:0]
+			}
 			continue
 		}
 
@@ -347,20 +358,25 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 	}
 }
 
-func (s *Service) applyRepopulateStream(repopulateData []*servicepb.UserData, keep map[uint32]struct{}) {
-	ctx := context.Background()
+func (s *Service) applyRepopulateChunk(ctx context.Context, repopulateData []*servicepb.UserData) {
+	if len(repopulateData) == 0 {
+		return
+	}
 	if len(repopulateData) >= s.repopulateBulkThreshold {
 		s.applyRepopulateBulk(ctx, repopulateData)
-	} else {
-		for _, msg := range repopulateData {
-			err := s.applyUserDataWithRetry(ctx, msg, s.repopulateUserApplyTimeout)
-			if err != nil {
-				u := msg.GetUser()
-				serviceLogger().Warn("repopulate user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
-			}
-		}
+		return
 	}
 
+	for _, msg := range repopulateData {
+		err := s.applyUserDataWithRetry(ctx, msg, s.repopulateUserApplyTimeout)
+		if err != nil {
+			u := msg.GetUser()
+			serviceLogger().Warn("repopulate user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
+		}
+	}
+}
+
+func (s *Service) cleanupRepopulateUsers(ctx context.Context, keep map[uint32]struct{}) {
 	existing := s.store.ListUsers()
 	for _, user := range existing {
 		if _, ok := keep[user.ID]; ok {

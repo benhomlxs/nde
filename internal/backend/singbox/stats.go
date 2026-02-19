@@ -20,6 +20,8 @@ type StatsClient struct {
 	conn *grpc.ClientConn
 }
 
+const statsCallTimeout = 8 * time.Second
+
 func NewStatsClient(port int) *StatsClient {
 	return &StatsClient{address: fmt.Sprintf("127.0.0.1:%d", port)}
 }
@@ -51,6 +53,10 @@ func (c *StatsClient) reset() {
 	c.conn = nil
 }
 
+func (c *StatsClient) Close() {
+	c.reset()
+}
+
 func (c *StatsClient) UserUsages(ctx context.Context, reset bool) (map[uint32]uint64, error) {
 	conn, err := c.connect(ctx)
 	if err != nil {
@@ -58,7 +64,9 @@ func (c *StatsClient) UserUsages(ctx context.Context, reset bool) (map[uint32]ui
 	}
 
 	client := sbstatspb.NewStatsServiceClient(conn)
-	resp, err := client.QueryStats(ctx, &sbstatspb.QueryStatsRequest{
+	rpcCtx, cancel := context.WithTimeout(ctx, statsCallTimeout)
+	defer cancel()
+	resp, err := client.QueryStats(rpcCtx, &sbstatspb.QueryStatsRequest{
 		Pattern: "user>>>",
 		Reset_:  reset,
 	})
@@ -92,7 +100,9 @@ func (c *StatsClient) SysStats(ctx context.Context) error {
 	}
 
 	client := sbstatspb.NewStatsServiceClient(conn)
-	_, err = client.GetSysStats(ctx, &sbstatspb.SysStatsRequest{})
+	rpcCtx, cancel := context.WithTimeout(ctx, statsCallTimeout)
+	defer cancel()
+	_, err = client.GetSysStats(rpcCtx, &sbstatspb.SysStatsRequest{})
 	if err != nil {
 		c.reset()
 		return err

@@ -70,6 +70,10 @@ func (a *API) reset() {
 	a.conn = nil
 }
 
+func (a *API) Close() {
+	a.reset()
+}
+
 func (a *API) AddUser(
 	ctx context.Context,
 	tag string,

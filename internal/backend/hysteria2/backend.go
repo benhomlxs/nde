@@ -179,9 +179,10 @@ func (b *Backend) startAuthServer(port int) error {
 }
 
 func (b *Backend) stopAuthServer(ctx context.Context) error {
-	b.mu.RLock()
+	b.mu.Lock()
 	server := b.server
-	b.mu.RUnlock()
+	b.server = nil
+	b.mu.Unlock()
 	if server == nil {
 		return nil
 	}

@@ -205,7 +205,7 @@ func (b *Backend) Stop(ctx context.Context) error {
 	err := b.runner.Stop(ctx)
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	api := b.api
 	if b.runtimeCfg != nil {
 		for _, inb := range b.runtimeCfg.Inbounds {
 			b.store.RemoveInbound(inb.Tag)
@@ -213,6 +213,11 @@ func (b *Backend) Stop(ctx context.Context) error {
 	}
 	b.runtimeCfg = nil
 	b.api = nil
+	b.mu.Unlock()
+
+	if api != nil {
+		api.Close()
+	}
 	return err
 }
 

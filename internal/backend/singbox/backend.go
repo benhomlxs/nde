@@ -54,6 +54,11 @@ func backendLogger() *slog.Logger {
 }
 
 func NewBackend(cfg config.Config, store storage.Storage) *Backend {
+	userUpdateTick := cfg.SingBoxUserModificationInterval
+	if userUpdateTick <= 0 {
+		userUpdateTick = 30 * time.Second
+	}
+
 	b := &Backend{
 		name:             "sing-box",
 		executablePath:   cfg.SingBoxExecutablePath,
@@ -63,7 +68,7 @@ func NewBackend(cfg config.Config, store storage.Storage) *Backend {
 		authAlgo:         cfg.AuthGenerationAlgorithm,
 		restartOnFailure: cfg.SingBoxRestartOnFailure,
 		restartInterval:  cfg.SingBoxRestartFailureInterval,
-		userUpdateTick:   cfg.SingBoxUserModificationInterval,
+		userUpdateTick:   userUpdateTick,
 		healthEnabled:    cfg.SingBoxHealthCheckEnabled,
 		healthInterval:   cfg.SingBoxHealthCheckInterval,
 		healthTimeout:    cfg.SingBoxHealthCheckTimeout,
@@ -189,7 +194,7 @@ func (b *Backend) Stop(ctx context.Context) error {
 	err := b.runner.Stop(ctx)
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	stats := b.stats
 	if b.runtimeCfg != nil {
 		for _, inb := range b.runtimeCfg.Inbounds {
 			b.store.RemoveInbound(inb.Tag)
@@ -197,6 +202,11 @@ func (b *Backend) Stop(ctx context.Context) error {
 	}
 	b.runtimeCfg = nil
 	b.stats = nil
+	b.mu.Unlock()
+
+	if stats != nil {
+		stats.Close()
+	}
 	return err
 }
 
