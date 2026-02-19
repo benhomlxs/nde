@@ -20,6 +20,8 @@ type Config struct {
 	ServiceAddress string
 	ServicePort    int
 	Insecure       bool
+	LogFormat      string
+	LogLevel       string
 
 	XrayEnabled                bool
 	XrayExecutablePath         string
@@ -44,9 +46,9 @@ type Config struct {
 	SingBoxHealthCheckTimeout       time.Duration
 	SingBoxHealthCheckFailures      int
 
-	HysteriaEnabled        bool
-	HysteriaExecutablePath string
-	HysteriaConfigPath     string
+	HysteriaEnabled                bool
+	HysteriaExecutablePath         string
+	HysteriaConfigPath             string
 	HysteriaRestartOnFailure       bool
 	HysteriaRestartFailureInterval time.Duration
 	HysteriaHealthCheckEnabled     bool
@@ -70,6 +72,8 @@ func Load() Config {
 		ServiceAddress: getenv("SERVICE_ADDRESS", "0.0.0.0"),
 		ServicePort:    getenvInt("SERVICE_PORT", 53042),
 		Insecure:       getenvBool("INSECURE", false),
+		LogFormat:      strings.ToLower(getenv("LOG_FORMAT", "pretty")),
+		LogLevel:       strings.ToLower(getenv("LOG_LEVEL", "")),
 
 		XrayEnabled:                getenvBool("XRAY_ENABLED", true),
 		XrayExecutablePath:         getenv("XRAY_EXECUTABLE_PATH", "/usr/bin/xray"),
@@ -94,9 +98,9 @@ func Load() Config {
 		SingBoxHealthCheckTimeout:       time.Duration(getenvInt("SING_BOX_HEALTH_CHECK_TIMEOUT", 2)) * time.Second,
 		SingBoxHealthCheckFailures:      getenvInt("SING_BOX_HEALTH_CHECK_FAILURE_THRESHOLD", 3),
 
-		HysteriaEnabled:        getenvBool("HYSTERIA_ENABLED", false),
-		HysteriaExecutablePath: getenv("HYSTERIA_EXECUTABLE_PATH", "/usr/bin/hysteria"),
-		HysteriaConfigPath:     getenv("HYSTERIA_CONFIG_PATH", "/etc/hysteria/config.yaml"),
+		HysteriaEnabled:                getenvBool("HYSTERIA_ENABLED", false),
+		HysteriaExecutablePath:         getenv("HYSTERIA_EXECUTABLE_PATH", "/usr/bin/hysteria"),
+		HysteriaConfigPath:             getenv("HYSTERIA_CONFIG_PATH", "/etc/hysteria/config.yaml"),
 		HysteriaRestartOnFailure:       getenvBool("HYSTERIA_RESTART_ON_FAILURE", true),
 		HysteriaRestartFailureInterval: time.Duration(getenvInt("HYSTERIA_RESTART_ON_FAILURE_INTERVAL", 3)) * time.Second,
 		HysteriaHealthCheckEnabled:     getenvBool("HYSTERIA_HEALTH_CHECK_ENABLED", true),

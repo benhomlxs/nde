@@ -31,11 +31,11 @@ const grpcMaxMessageSize = 64 * 1024 * 1024
 
 func main() {
 	cfg := config.Load()
-	logutil.Configure(cfg.Debug)
+	logutil.Configure(cfg.Debug, cfg.LogFormat, cfg.LogLevel)
 	logger := slog.With("component", "main")
-	logger.Info("marznode starting",
-		"service_address", cfg.ServiceAddress,
-		"service_port", cfg.ServicePort,
+	logger.Info("Starting marznode service",
+		"address", cfg.ServiceAddress,
+		"port", cfg.ServicePort,
 		"insecure", cfg.Insecure,
 	)
 
@@ -48,7 +48,7 @@ func main() {
 			fatal(logger, "start xray failed", "error", err)
 		}
 		backends["xray"] = b
-		logger.Info("backend started", "name", "xray", "version", b.Version())
+		logger.Info("Backend core started", "backend", "xray", "version", b.Version())
 	}
 	if cfg.HysteriaEnabled {
 		b := hysteria2.NewBackend(cfg, store)
@@ -56,7 +56,7 @@ func main() {
 			fatal(logger, "start hysteria2 failed", "error", err)
 		}
 		backends["hysteria2"] = b
-		logger.Info("backend started", "name", "hysteria2", "version", b.Version())
+		logger.Info("Backend core started", "backend", "hysteria2", "version", b.Version())
 	}
 	if cfg.SingBoxEnabled {
 		b := singbox.NewBackend(cfg, store)
@@ -64,7 +64,7 @@ func main() {
 			fatal(logger, "start sing-box failed", "error", err)
 		}
 		backends["sing-box"] = b
-		logger.Info("backend started", "name", "sing-box", "version", b.Version())
+		logger.Info("Backend core started", "backend", "sing-box", "version", b.Version())
 	}
 
 	serverOpts := []grpc.ServerOption{
@@ -102,7 +102,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("grpc server listening", "address", addr)
+		logger.Info("Node service running", "address", addr)
 		if err := grpcServer.Serve(lis); err != nil {
 			fatal(logger, "grpc server failed", "error", err)
 		}

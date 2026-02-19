@@ -27,6 +27,7 @@ Main variables are in `.env.example`:
 - backend paths: `XRAY_EXECUTABLE_PATH`, `SING_BOX_EXECUTABLE_PATH`, `HYSTERIA_EXECUTABLE_PATH`
 - backend config paths: `XRAY_CONFIG_PATH`, `SING_BOX_CONFIG_PATH`, `HYSTERIA_CONFIG_PATH`
 - TLS: `SSL_KEY_FILE`, `SSL_CERT_FILE`, `SSL_CLIENT_CERT_FILE`
+- logging: `LOG_FORMAT` (`pretty`/`json`/`text`), `LOG_LEVEL` (`debug`/`info`/`warn`/`error`), `DEBUG` (fallback when `LOG_LEVEL` is not set)
 
 ## Proto Generation
 
