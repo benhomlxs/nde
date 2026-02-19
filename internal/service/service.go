@@ -311,6 +311,7 @@ func waitWithContext(ctx context.Context, d time.Duration) error {
 
 func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData, servicepb.Empty]) error {
 	ctx := stream.Context()
+	logger := serviceLogger()
 	repopulateMode := false
 	first := true
 	keep := map[uint32]struct{}{}
@@ -325,6 +326,7 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 			return stream.SendAndClose(&servicepb.Empty{})
 		}
 		if err != nil {
+			logger.Error("sync users stream receive failed", "error", err)
 			return err
 		}
 
@@ -352,7 +354,7 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 		err = s.applyUserDataWithRetry(ctx, msg, s.syncUserApplyTimeout)
 		if err != nil {
 			u := msg.GetUser()
-			serviceLogger().Warn("sync user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
+			logger.Warn("sync user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
 			continue
 		}
 	}
@@ -465,6 +467,7 @@ func (s *Service) RepopulateUsers(ctx context.Context, req *servicepb.UsersData)
 
 func (s *Service) FetchBackends(ctx context.Context, _ *servicepb.Empty) (*servicepb.BackendsResponse, error) {
 	_ = ctx
+	logger := serviceLogger()
 	out := &servicepb.BackendsResponse{
 		Backends: make([]*servicepb.Backend, 0, len(s.backends)),
 	}
@@ -472,7 +475,11 @@ func (s *Service) FetchBackends(ctx context.Context, _ *servicepb.Empty) (*servi
 		inbounds := b.ListInbounds()
 		pbInbounds := make([]*servicepb.Inbound, 0, len(inbounds))
 		for _, inb := range inbounds {
-			raw, _ := json.Marshal(inb.Config)
+			raw, err := json.Marshal(inb.Config)
+			if err != nil {
+				logger.Warn("backend inbound config marshal failed", "backend", name, "tag", inb.Tag, "error", err)
+				raw = []byte("{}")
+			}
 			rawStr := string(raw)
 			pbInbounds = append(pbInbounds, &servicepb.Inbound{
 				Tag:    inb.Tag,
@@ -490,10 +497,12 @@ func (s *Service) FetchBackends(ctx context.Context, _ *servicepb.Empty) (*servi
 }
 
 func (s *Service) FetchUsersStats(ctx context.Context, _ *servicepb.Empty) (*servicepb.UsersStats, error) {
+	logger := serviceLogger()
 	all := map[uint32]uint64{}
-	for _, b := range s.backends {
+	for name, b := range s.backends {
 		stats, err := b.GetUsages(ctx, true)
 		if err != nil {
+			logger.Warn("fetch users stats failed", "backend", name, "error", err)
 			continue
 		}
 		for uid, usage := range stats {
@@ -511,16 +520,20 @@ func (s *Service) FetchUsersStats(ctx context.Context, _ *servicepb.Empty) (*ser
 }
 
 func (s *Service) StreamBackendLogs(req *servicepb.BackendLogsRequest, stream grpc.ServerStreamingServer[servicepb.LogLine]) error {
+	logger := serviceLogger()
 	b, ok := s.backends[req.GetBackendName()]
 	if !ok {
+		logger.Warn("stream backend logs failed: backend not found", "backend", req.GetBackendName())
 		return status.Error(codes.NotFound, "backend not found")
 	}
 	logs, err := b.LogStream(stream.Context(), req.GetIncludeBuffer())
 	if err != nil {
+		logger.Error("stream backend logs failed", "backend", req.GetBackendName(), "error", err)
 		return status.Errorf(codes.Unavailable, "log stream failed: %v", err)
 	}
 	for line := range logs {
 		if err := stream.Send(&servicepb.LogLine{Line: line}); err != nil {
+			logger.Warn("stream backend logs send failed", "backend", req.GetBackendName(), "error", err)
 			return err
 		}
 	}
@@ -528,12 +541,15 @@ func (s *Service) StreamBackendLogs(req *servicepb.BackendLogsRequest, stream gr
 }
 
 func (s *Service) FetchBackendConfig(ctx context.Context, req *servicepb.Backend) (*servicepb.BackendConfig, error) {
+	logger := serviceLogger()
 	b, ok := s.backends[req.GetName()]
 	if !ok {
+		logger.Warn("fetch backend config failed: backend not found", "backend", req.GetName())
 		return nil, status.Error(codes.NotFound, "backend not found")
 	}
 	cfg, err := b.GetConfig(ctx)
 	if err != nil {
+		logger.Error("fetch backend config failed", "backend", req.GetName(), "error", err)
 		return nil, status.Errorf(codes.Internal, "fetch config failed: %v", err)
 	}
 	return &servicepb.BackendConfig{
@@ -543,27 +559,31 @@ func (s *Service) FetchBackendConfig(ctx context.Context, req *servicepb.Backend
 }
 
 func (s *Service) RestartBackend(ctx context.Context, req *servicepb.RestartBackendRequest) (*servicepb.Empty, error) {
+	logger := serviceLogger()
 	b, ok := s.backends[req.GetBackendName()]
 	if !ok {
+		logger.Warn("backend restart failed: backend not found", "backend", req.GetBackendName())
 		return nil, status.Error(codes.NotFound, "backend not found")
 	}
 	cfg := ""
 	if req.GetConfig() != nil {
 		cfg = req.GetConfig().GetConfiguration()
 	}
-	serviceLogger().Info("backend restart requested", "backend", req.GetBackendName())
+	logger.Info("backend restart requested", "backend", req.GetBackendName())
 	if err := b.Restart(ctx, cfg); err != nil {
-		serviceLogger().Error("backend restart failed", "backend", req.GetBackendName(), "error", err)
+		logger.Error("backend restart failed", "backend", req.GetBackendName(), "error", err)
 		return nil, status.Errorf(codes.Unavailable, "backend restart failed: %v", err)
 	}
-	serviceLogger().Info("backend restart completed", "backend", req.GetBackendName())
+	logger.Info("backend restart completed", "backend", req.GetBackendName())
 	return &servicepb.Empty{}, nil
 }
 
 func (s *Service) GetBackendStats(ctx context.Context, req *servicepb.Backend) (*servicepb.BackendStats, error) {
 	_ = ctx
+	logger := serviceLogger()
 	b, ok := s.backends[req.GetName()]
 	if !ok {
+		logger.Warn("get backend stats failed: backend not found", "backend", req.GetName())
 		return nil, status.Error(codes.NotFound, "backend not found")
 	}
 	return &servicepb.BackendStats{Running: b.Running()}, nil
