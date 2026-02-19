@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -11,9 +12,11 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	expcredentials "google.golang.org/grpc/experimental/credentials"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 
 	"marznode/internal/backend"
 	"marznode/internal/backend/hysteria2"
@@ -136,6 +139,10 @@ func unaryLogInterceptor(debug bool) grpc.UnaryServerInterceptor {
 		}
 		resp, err := handler(ctx, req)
 		if err != nil {
+			if isExpectedGRPCCancel(err) {
+				logger.Info("grpc unary canceled", "method", info.FullMethod)
+				return resp, err
+			}
 			logger.Error("grpc unary error", "method", info.FullMethod, "error", err)
 		}
 		return resp, err
@@ -150,6 +157,10 @@ func streamLogInterceptor(debug bool) grpc.StreamServerInterceptor {
 		}
 		err := handler(srv, ss)
 		if err != nil {
+			if isExpectedGRPCCancel(err) {
+				logger.Info("grpc stream canceled", "method", info.FullMethod)
+				return err
+			}
 			logger.Error("grpc stream error", "method", info.FullMethod, "error", err)
 		}
 		return err
@@ -159,4 +170,14 @@ func streamLogInterceptor(debug bool) grpc.StreamServerInterceptor {
 func fatal(logger *slog.Logger, msg string, args ...any) {
 	logger.Error(msg, args...)
 	os.Exit(1)
+}
+
+func isExpectedGRPCCancel(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	return status.Code(err) == codes.Canceled
 }

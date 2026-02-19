@@ -326,6 +326,10 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 			return stream.SendAndClose(&servicepb.Empty{})
 		}
 		if err != nil {
+			if isExpectedStreamClose(err) {
+				logger.Info("sync users stream closed by client", "reason", err)
+				return nil
+			}
 			logger.Error("sync users stream receive failed", "error", err)
 			return err
 		}
@@ -602,4 +606,14 @@ func sanitizeBackendVersion(version string) string {
 		return version
 	}
 	return version[:32]
+}
+
+func isExpectedStreamClose(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	return status.Code(err) == codes.Canceled
 }
