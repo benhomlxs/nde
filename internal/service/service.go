@@ -125,6 +125,7 @@ func (s *Service) backendByTag(tag string) (backend.Backend, error) {
 }
 
 func (s *Service) addUser(ctx context.Context, user models.User, inbounds []models.Inbound) error {
+	var errs []error
 	for _, inb := range inbounds {
 		b, err := s.backendByTag(inb.Tag)
 		if err != nil {
@@ -132,13 +133,14 @@ func (s *Service) addUser(ctx context.Context, user models.User, inbounds []mode
 			continue
 		}
 		if err := b.AddUser(ctx, user, inb); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("tag=%s: %w", inb.Tag, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (s *Service) removeUser(ctx context.Context, user models.User, inbounds []models.Inbound) error {
+	var errs []error
 	for _, inb := range inbounds {
 		b, err := s.backendByTag(inb.Tag)
 		if err != nil {
@@ -146,10 +148,10 @@ func (s *Service) removeUser(ctx context.Context, user models.User, inbounds []m
 			continue
 		}
 		if err := b.RemoveUser(ctx, user, inb); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("tag=%s: %w", inb.Tag, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func pbUserToModel(pb *servicepb.User) models.User {

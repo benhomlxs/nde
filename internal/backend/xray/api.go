@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
@@ -31,8 +32,9 @@ import (
 type API struct {
 	address string
 
-	mu   sync.Mutex
-	conn *grpc.ClientConn
+	mu      sync.Mutex
+	conn    *grpc.ClientConn
+	connGen uint64
 }
 
 const apiCallTimeout = 8 * time.Second
@@ -43,25 +45,35 @@ func NewAPI(port int) *API {
 	}
 }
 
-func (a *API) connect(ctx context.Context) (*grpc.ClientConn, error) {
+func (a *API) connect(ctx context.Context) (*grpc.ClientConn, uint64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if a.conn != nil {
-		return a.conn, nil
+		return a.conn, a.connGen, nil
 	}
 
 	dctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 	conn, err := grpc.DialContext(dctx, a.address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	a.connGen++
 	a.conn = conn
-	return conn, nil
+	return conn, a.connGen, nil
 }
 
-func (a *API) reset() {
+func (a *API) resetIfGen(gen uint64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.conn != nil && a.connGen == gen {
+		_ = a.conn.Close()
+		a.conn = nil
+	}
+}
+
+func (a *API) Close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.conn != nil {
@@ -70,8 +82,19 @@ func (a *API) reset() {
 	a.conn = nil
 }
 
-func (a *API) Close() {
-	a.reset()
+func isConnectionLevelError(err error) bool {
+	if err == nil {
+		return false
+	}
+	code := status.Code(err)
+	if code == codes.Unavailable {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "transport is closing") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe")
 }
 
 func (a *API) AddUser(
@@ -81,7 +104,7 @@ func (a *API) AddUser(
 	username, key, protocolName, flow, method string,
 	algo config.AuthAlgorithm,
 ) error {
-	conn, err := a.connect(ctx)
+	conn, gen, err := a.connect(ctx)
 	if err != nil {
 		return err
 	}
@@ -108,14 +131,16 @@ func (a *API) AddUser(
 		if isAlreadyExistsError(err) {
 			return nil
 		}
-		a.reset()
+		if isConnectionLevelError(err) {
+			a.resetIfGen(gen)
+		}
 		return err
 	}
 	return nil
 }
 
 func (a *API) RemoveUser(ctx context.Context, tag string, uid uint32, username string) error {
-	conn, err := a.connect(ctx)
+	conn, gen, err := a.connect(ctx)
 	if err != nil {
 		return err
 	}
@@ -133,14 +158,16 @@ func (a *API) RemoveUser(ctx context.Context, tag string, uid uint32, username s
 		if isUserNotFoundError(err) {
 			return nil
 		}
-		a.reset()
+		if isConnectionLevelError(err) {
+			a.resetIfGen(gen)
+		}
 		return err
 	}
 	return nil
 }
 
 func (a *API) UserUsages(ctx context.Context, reset bool) (map[uint32]uint64, error) {
-	conn, err := a.connect(ctx)
+	conn, gen, err := a.connect(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +180,9 @@ func (a *API) UserUsages(ctx context.Context, reset bool) (map[uint32]uint64, er
 		Reset_:  reset,
 	})
 	if err != nil {
-		a.reset()
+		if isConnectionLevelError(err) {
+			a.resetIfGen(gen)
+		}
 		return nil, err
 	}
 
@@ -176,7 +205,7 @@ func (a *API) UserUsages(ctx context.Context, reset bool) (map[uint32]uint64, er
 }
 
 func (a *API) SysStats(ctx context.Context) error {
-	conn, err := a.connect(ctx)
+	conn, gen, err := a.connect(ctx)
 	if err != nil {
 		return err
 	}
@@ -186,7 +215,9 @@ func (a *API) SysStats(ctx context.Context) error {
 	defer cancel()
 	_, err = client.GetSysStats(rpcCtx, &statscmd.SysStatsRequest{})
 	if err != nil {
-		a.reset()
+		if isConnectionLevelError(err) {
+			a.resetIfGen(gen)
+		}
 		return err
 	}
 	return nil

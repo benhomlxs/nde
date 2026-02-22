@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
@@ -173,15 +174,16 @@ func (b *Backend) startRepopulateStorageUsers() {
 
 func (b *Backend) repopulateStorageUsers(ctx context.Context) error {
 	inbounds := b.ListInbounds()
+	var errs []error
 	for _, inb := range inbounds {
 		users := b.store.ListInboundUsers(inb.Tag)
 		for _, user := range users {
 			if err := b.AddUser(ctx, user, inb); err != nil {
-				return err
+				errs = append(errs, fmt.Errorf("uid=%d tag=%s: %w", user.ID, inb.Tag, err))
 			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (b *Backend) saveConfig(raw string) error {
