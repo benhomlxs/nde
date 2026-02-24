@@ -229,6 +229,11 @@ func resolveInbounds(ctx context.Context, cfg map[string]any, executablePath, re
 			settings["host"] = toStringSlice(netSettings["host"])
 		case "grpc":
 			settings["path"] = toString(netSettings["serviceName"])
+			if v, ok := netSettings["multiMode"]; ok {
+				settings["multiMode"] = v
+			} else {
+				settings["multiMode"] = false
+			}
 		case "kcp", "mkcp":
 			settings["path"] = toString(netSettings["seed"])
 			settings["header_type"] = toString(toMap(netSettings["header"])["type"])
