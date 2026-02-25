@@ -32,6 +32,7 @@ type Backend struct {
 	healthInterval   time.Duration
 	healthTimeout    time.Duration
 	healthFailures   int
+	healthCooldown   time.Duration
 
 	store  storage.Storage
 	runner *Runner
@@ -41,10 +42,15 @@ type Backend struct {
 	api        *API
 	rawConfig  string
 
-	restartMu   sync.Mutex
-	stopPlanned atomic.Bool
+	restartMu       sync.Mutex
+	stopPlanned     atomic.Bool
+	lastStartTime   time.Time
+	lastStartTimeMu sync.Mutex
 
 	repopulateRunning atomic.Bool
+	repopulateMu      sync.Mutex
+	repopulateCancel  context.CancelFunc
+	repopulateDone    chan struct{}
 }
 
 var _ backend.Backend = (*Backend)(nil)
@@ -67,6 +73,7 @@ func NewBackend(cfg config.Config, store storage.Storage) *Backend {
 		healthInterval:   cfg.XrayHealthCheckInterval,
 		healthTimeout:    cfg.XrayHealthCheckTimeout,
 		healthFailures:   cfg.XrayHealthCheckFailures,
+		healthCooldown:   cfg.XrayHealthRestartCooldown,
 		store:            store,
 		runner:           NewRunner(cfg.XrayExecutablePath, cfg.XrayAssetsPath),
 	}
@@ -149,27 +156,102 @@ func (b *Backend) Start(ctx context.Context, backendConfig string) error {
 	b.rawConfig = backendConfig
 	b.mu.Unlock()
 
+	if err := b.waitAPIReady(); err != nil {
+		_ = b.Stop(context.Background())
+		return fmt.Errorf("xray api not ready after start: %w", err)
+	}
+
+	b.lastStartTimeMu.Lock()
+	b.lastStartTime = time.Now()
+	b.lastStartTimeMu.Unlock()
+
 	b.startRepopulateStorageUsers()
 	return nil
 }
 
+func (b *Backend) waitAPIReady() error {
+	readyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return util.Retry(readyCtx, 6, 300*time.Millisecond, func() error {
+		b.mu.RLock()
+		api := b.api
+		b.mu.RUnlock()
+		if api == nil {
+			return errors.New("xray api unavailable")
+		}
+
+		probeCtx, probeCancel := context.WithTimeout(readyCtx, 1200*time.Millisecond)
+		defer probeCancel()
+		return api.SysStats(probeCtx)
+	})
+}
+
 func (b *Backend) startRepopulateStorageUsers() {
-	if !b.repopulateRunning.CompareAndSwap(false, true) {
+	b.repopulateMu.Lock()
+	if b.repopulateRunning.Load() {
+		b.repopulateMu.Unlock()
 		return
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	done := make(chan struct{})
+	b.repopulateCancel = cancel
+	b.repopulateDone = done
+	b.repopulateRunning.Store(true)
+	b.repopulateMu.Unlock()
+
 	go func() {
-		defer b.repopulateRunning.Store(false)
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		defer close(done)
+		defer func() {
+			b.repopulateMu.Lock()
+			b.repopulateCancel = nil
+			b.repopulateDone = nil
+			b.repopulateRunning.Store(false)
+			b.repopulateMu.Unlock()
+		}()
 		defer cancel()
+
 		err := util.Retry(ctx, 6, 400*time.Millisecond, func() error {
 			return b.repopulateStorageUsers(ctx)
 		})
 		if err != nil {
+			if ctx.Err() != nil {
+				backendLogger().Info("background user repopulate canceled", "reason", ctx.Err())
+				return
+			}
 			backendLogger().Warn("background user repopulate finished with errors", "error", err)
 			return
 		}
 		backendLogger().Info("background user repopulate completed")
 	}()
+}
+
+func (b *Backend) stopRepopulateStorageUsers(waitTimeout time.Duration) {
+	b.repopulateMu.Lock()
+	cancel := b.repopulateCancel
+	done := b.repopulateDone
+	b.repopulateMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if done == nil {
+		return
+	}
+
+	if waitTimeout <= 0 {
+		<-done
+		return
+	}
+
+	timer := time.NewTimer(waitTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		backendLogger().Warn("timeout waiting for repopulate worker shutdown", "timeout", waitTimeout)
+	}
 }
 
 func (b *Backend) repopulateStorageUsers(ctx context.Context) error {
@@ -203,6 +285,14 @@ type bytesMap map[string]any
 func (b *Backend) Stop(ctx context.Context) error {
 	b.stopPlanned.Store(true)
 	defer b.stopPlanned.Store(false)
+
+	waitTimeout := 20 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 && remaining < waitTimeout {
+			waitTimeout = remaining
+		}
+	}
+	b.stopRepopulateStorageUsers(waitTimeout)
 
 	err := b.runner.Stop(ctx)
 
@@ -376,6 +466,19 @@ func (b *Backend) monitorHealth(ctx context.Context) {
 			backendLogger().Warn("health check failed", "failure_count", consecutiveFailures, "failure_threshold", maxFailures, "error", err)
 			if consecutiveFailures < maxFailures {
 				continue
+			}
+
+			if b.healthCooldown > 0 {
+				b.lastStartTimeMu.Lock()
+				lastStart := b.lastStartTime
+				b.lastStartTimeMu.Unlock()
+				if !lastStart.IsZero() {
+					if elapsed := time.Since(lastStart); elapsed < b.healthCooldown {
+						backendLogger().Warn("health restart skipped: within cooldown period", "elapsed", elapsed, "cooldown", b.healthCooldown)
+						consecutiveFailures = 0
+						continue
+					}
+				}
 			}
 
 			consecutiveFailures = 0
