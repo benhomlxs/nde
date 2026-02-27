@@ -196,7 +196,7 @@ func (b *Backend) Stop(ctx context.Context) error {
 	defer b.stopPlanned.Store(false)
 
 	_ = b.stopAuthServer(ctx)
-	b.store.RemoveInbound("hysteria2")
+	b.store.UnregisterInbound("hysteria2")
 	return b.runner.Stop(ctx)
 }
 

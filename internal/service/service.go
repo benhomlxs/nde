@@ -197,7 +197,7 @@ func isRepopulateMarker(msg *servicepb.UserData) bool {
 	return msg.GetUser().GetId() == 0 && msg.GetUser().GetUsername() == repopulateMarkerUsername
 }
 
-func (s *Service) applyUserData(ctx context.Context, data *servicepb.UserData) error {
+func (s *Service) applyUserData(ctx context.Context, data *servicepb.UserData, forceAdd bool) error {
 	user := pbUserToModel(data.GetUser())
 	if user.ID == 0 || user.Username == "" {
 		return nil
@@ -235,13 +235,7 @@ func (s *Service) applyUserData(ctx context.Context, data *servicepb.UserData) e
 		desired[tag] = struct{}{}
 	}
 
-	addedTags := make([]string, 0)
 	removedTags := make([]string, 0)
-	for tag := range desired {
-		if _, ok := current[tag]; !ok {
-			addedTags = append(addedTags, tag)
-		}
-	}
 	for tag := range current {
 		if _, ok := desired[tag]; !ok {
 			removedTags = append(removedTags, tag)
@@ -249,27 +243,40 @@ func (s *Service) applyUserData(ctx context.Context, data *servicepb.UserData) e
 	}
 
 	newInbounds := s.resolveInbounds(reqTags)
-	addedInbounds := s.resolveInbounds(addedTags)
 	removedInbounds := s.resolveInbounds(removedTags)
 
 	if err := s.removeUser(ctx, stored, removedInbounds); err != nil {
 		return err
 	}
-	if err := s.addUser(ctx, stored, addedInbounds); err != nil {
-		return err
+
+	if forceAdd {
+		if err := s.addUser(ctx, stored, newInbounds); err != nil {
+			return err
+		}
+	} else {
+		addedTags := make([]string, 0)
+		for tag := range desired {
+			if _, ok := current[tag]; !ok {
+				addedTags = append(addedTags, tag)
+			}
+		}
+		addedInbounds := s.resolveInbounds(addedTags)
+		if err := s.addUser(ctx, stored, addedInbounds); err != nil {
+			return err
+		}
 	}
 	s.store.UpdateUserInbounds(stored, newInbounds)
 	return nil
 }
 
-func (s *Service) applyUserDataWithRetry(ctx context.Context, data *servicepb.UserData, perAttemptTimeout time.Duration) error {
+func (s *Service) applyUserDataWithRetry(ctx context.Context, data *servicepb.UserData, perAttemptTimeout time.Duration, forceAdd bool) error {
 	if s.userApplyRetries <= 1 {
-		return s.applyUserDataWithTimeout(ctx, data, perAttemptTimeout)
+		return s.applyUserDataWithTimeout(ctx, data, perAttemptTimeout, forceAdd)
 	}
 
 	var lastErr error
 	for attempt := 1; attempt <= s.userApplyRetries; attempt++ {
-		err := s.applyUserDataWithTimeout(ctx, data, perAttemptTimeout)
+		err := s.applyUserDataWithTimeout(ctx, data, perAttemptTimeout, forceAdd)
 		if err == nil {
 			return nil
 		}
@@ -288,13 +295,13 @@ func (s *Service) applyUserDataWithRetry(ctx context.Context, data *servicepb.Us
 	return lastErr
 }
 
-func (s *Service) applyUserDataWithTimeout(ctx context.Context, data *servicepb.UserData, timeout time.Duration) error {
+func (s *Service) applyUserDataWithTimeout(ctx context.Context, data *servicepb.UserData, timeout time.Duration, forceAdd bool) error {
 	if timeout <= 0 {
-		return s.applyUserData(ctx, data)
+		return s.applyUserData(ctx, data, forceAdd)
 	}
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return s.applyUserData(attemptCtx, data)
+	return s.applyUserData(attemptCtx, data, forceAdd)
 }
 
 func waitWithContext(ctx context.Context, d time.Duration) error {
@@ -357,7 +364,7 @@ func (s *Service) SyncUsers(stream grpc.ClientStreamingServer[servicepb.UserData
 			continue
 		}
 
-		err = s.applyUserDataWithRetry(ctx, msg, s.syncUserApplyTimeout)
+		err = s.applyUserDataWithRetry(ctx, msg, s.syncUserApplyTimeout, false)
 		if err != nil {
 			u := msg.GetUser()
 			logger.Warn("sync user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
@@ -376,7 +383,7 @@ func (s *Service) applyRepopulateChunk(ctx context.Context, repopulateData []*se
 	}
 
 	for _, msg := range repopulateData {
-		err := s.applyUserDataWithRetry(ctx, msg, s.repopulateUserApplyTimeout)
+		err := s.applyUserDataWithRetry(ctx, msg, s.repopulateUserApplyTimeout, true)
 		if err != nil {
 			u := msg.GetUser()
 			serviceLogger().Warn("repopulate user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
@@ -424,7 +431,7 @@ func (s *Service) applyRepopulateBulk(ctx context.Context, repopulateData []*ser
 		go func() {
 			defer wg.Done()
 			for item := range jobs {
-				err := s.applyUserDataWithRetry(ctx, item.data, s.repopulateUserApplyTimeout)
+				err := s.applyUserDataWithRetry(ctx, item.data, s.repopulateUserApplyTimeout, true)
 				if err != nil {
 					u := item.data.GetUser()
 					serviceLogger().Warn("repopulate bulk user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
@@ -441,18 +448,44 @@ func (s *Service) applyRepopulateBulk(ctx context.Context, repopulateData []*ser
 }
 
 func (s *Service) RepopulateUsers(ctx context.Context, req *servicepb.UsersData) (*servicepb.Empty, error) {
-	for _, userData := range req.GetUsersData() {
-		err := s.applyUserDataWithRetry(ctx, userData, s.repopulateUserApplyTimeout)
-		if err != nil {
-			u := userData.GetUser()
-			serviceLogger().Warn("repopulate user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
-			continue
+	usersData := req.GetUsersData()
+	if len(usersData) > 0 {
+		workers := s.repopulateWorkers
+		if workers < 1 {
+			workers = 1
 		}
+		if workers > len(usersData) {
+			workers = len(usersData)
+		}
+
+		type job struct {
+			data *servicepb.UserData
+		}
+		jobs := make(chan job, workers*2)
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for item := range jobs {
+					err := s.applyUserDataWithRetry(ctx, item.data, s.repopulateUserApplyTimeout, true)
+					if err != nil {
+						u := item.data.GetUser()
+						serviceLogger().Warn("repopulate user skipped", "uid", u.GetId(), "username", u.GetUsername(), "error", err)
+					}
+				}
+			}()
+		}
+		for _, userData := range usersData {
+			jobs <- job{data: userData}
+		}
+		close(jobs)
+		wg.Wait()
 	}
 
 	existing := s.store.ListUsers()
-	keep := make(map[uint32]struct{}, len(req.GetUsersData()))
-	for _, userData := range req.GetUsersData() {
+	keep := make(map[uint32]struct{}, len(usersData))
+	for _, userData := range usersData {
 		keep[userData.GetUser().GetId()] = struct{}{}
 	}
 	for _, user := range existing {

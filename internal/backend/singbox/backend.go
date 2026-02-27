@@ -197,7 +197,7 @@ func (b *Backend) Stop(ctx context.Context) error {
 	stats := b.stats
 	if b.runtimeCfg != nil {
 		for _, inb := range b.runtimeCfg.Inbounds {
-			b.store.RemoveInbound(inb.Tag)
+			b.store.UnregisterInbound(inb.Tag)
 		}
 	}
 	b.runtimeCfg = nil

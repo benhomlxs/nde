@@ -12,5 +12,6 @@ type Storage interface {
 	ListInbounds(tags []string) []models.Inbound
 	RegisterInbound(inbound models.Inbound)
 	RemoveInbound(tag string)
+	UnregisterInbound(tag string)
 	ListInboundUsers(tag string) []models.User
 }

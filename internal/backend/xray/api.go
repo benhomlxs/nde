@@ -35,14 +35,31 @@ type API struct {
 	mu      sync.Mutex
 	conn    *grpc.ClientConn
 	connGen uint64
+
+	sem chan struct{}
 }
 
 const apiCallTimeout = 8 * time.Second
+const apiMaxConcurrent = 8
 
 func NewAPI(port int) *API {
 	return &API{
 		address: fmt.Sprintf("127.0.0.1:%d", port),
+		sem:     make(chan struct{}, apiMaxConcurrent),
 	}
+}
+
+func (a *API) acquireSem(ctx context.Context) error {
+	select {
+	case a.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (a *API) releaseSem() {
+	<-a.sem
 }
 
 func (a *API) connect(ctx context.Context) (*grpc.ClientConn, uint64, error) {
@@ -104,6 +121,11 @@ func (a *API) AddUser(
 	username, key, protocolName, flow, method string,
 	algo config.AuthAlgorithm,
 ) error {
+	if err := a.acquireSem(ctx); err != nil {
+		return err
+	}
+	defer a.releaseSem()
+
 	conn, gen, err := a.connect(ctx)
 	if err != nil {
 		return err
@@ -140,6 +162,11 @@ func (a *API) AddUser(
 }
 
 func (a *API) RemoveUser(ctx context.Context, tag string, uid uint32, username string) error {
+	if err := a.acquireSem(ctx); err != nil {
+		return err
+	}
+	defer a.releaseSem()
+
 	conn, gen, err := a.connect(ctx)
 	if err != nil {
 		return err
@@ -167,6 +194,11 @@ func (a *API) RemoveUser(ctx context.Context, tag string, uid uint32, username s
 }
 
 func (a *API) UserUsages(ctx context.Context, reset bool) (map[uint32]uint64, error) {
+	if err := a.acquireSem(ctx); err != nil {
+		return nil, err
+	}
+	defer a.releaseSem()
+
 	conn, gen, err := a.connect(ctx)
 	if err != nil {
 		return nil, err
@@ -205,6 +237,11 @@ func (a *API) UserUsages(ctx context.Context, reset bool) (map[uint32]uint64, er
 }
 
 func (a *API) SysStats(ctx context.Context) error {
+	if err := a.acquireSem(ctx); err != nil {
+		return err
+	}
+	defer a.releaseSem()
+
 	conn, gen, err := a.connect(ctx)
 	if err != nil {
 		return err

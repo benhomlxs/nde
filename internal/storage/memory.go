@@ -108,6 +108,12 @@ func (m *Memory) RemoveInbound(tag string) {
 	}
 }
 
+func (m *Memory) UnregisterInbound(tag string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.inbounds, tag)
+}
+
 func (m *Memory) ListInboundUsers(tag string) []models.User {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
